@@ -44,4 +44,25 @@ export default async function handler(req, res) {
       last: q.last,
       bid: q.bid,
       ask: q.ask,
+      bid_size: q.bid_size,
+      ask_size: q.ask_size,
+      volume: q.volume,
+      open: q.open,
+      high: q.high,
+      low: q.low,
+      prev_close: q.prevclose,
+      percent_change: q.change_percentage,
+      timestamp: q.trade_date
+    }));
 
+    return res.status(200).json({
+      count: normalized.length,
+      data: normalized
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: "internal_error",
+      message: err.message
+    });
+  }
+}
