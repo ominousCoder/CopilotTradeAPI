@@ -1,3 +1,6 @@
+import { pickExpiration } from "./utils/pickExpiration.js";
+import { buildCandidates } from "./utils/buildCandidates.js";
+
 export default async function handler(req, res) {
   const { symbols } = req.query;
 
@@ -9,57 +12,69 @@ export default async function handler(req, res) {
   }
 
   try {
+    const origin = req.headers.origin;
+    const results = [];
+
     // 1) Fetch quotes for all symbols
-    const batchUrl = `${req.headers.origin}/api/batch-scan?symbols=${symbols}`;
+    const batchUrl = `${origin}/api/batch-scan?symbols=${encodeURIComponent(
+      symbols
+    )}`;
     const batchRes = await fetch(batchUrl);
     const batchData = await batchRes.json();
 
-    if (!batchRes.ok) {
+    if (!batchRes.ok || !batchData?.data) {
       return res.status(502).json({
         error: "batch_scan_failed",
-        message: batchData.message
+        message: batchData?.message || "Batch scan failed."
       });
     }
-
-    const results = [];
 
     // 2) Loop through each symbol
     for (const q of batchData.data) {
       const symbol = q.symbol;
+      const underlyingPrice = q.last;
 
-      // Pick expiration (placeholder: nearest monthly)
-      const expiration = pickExpiration(); // You will implement this
+      if (!symbol || !underlyingPrice || underlyingPrice <= 0) continue;
 
-      // 3) Fetch chain for this symbol/expiration
-      const chainUrl = `${req.headers.origin}/api/chain?symbol=${symbol}&expiration=${expiration}`;
+      // 3) Pick expiration
+      const expiration = await pickExpiration(symbol);
+      if (!expiration) continue;
+
+      // 4) Fetch chain
+      const chainUrl = `${origin}/api/chain?symbol=${encodeURIComponent(
+        symbol
+      )}&expiration=${encodeURIComponent(expiration)}`;
       const chainRes = await fetch(chainUrl);
       const chainData = await chainRes.json();
 
-      if (!chainRes.ok) continue;
+      if (!chainRes.ok || !chainData?.options || !chainData.options.length) {
+        continue;
+      }
 
-      // 4) Build candidate spreads (placeholder: 1-wide call spreads)
-      const candidates = buildCandidates(chainData.options);
+      // 5) Build candidate spreads
+      const candidates = buildCandidates(chainData.options, underlyingPrice);
+      if (!candidates.length) continue;
 
-      // 5) Score each candidate
+      // 6) Score each candidate
       for (const c of candidates) {
         const scoreUrl =
-          `${req.headers.origin}/api/spread-score` +
-          `?symbol=${symbol}` +
-          `&expiration=${expiration}` +
-          `&long_strike=${c.long}` +
-          `&short_strike=${c.short}` +
-          `&type=${c.type}`;
+          `${origin}/api/spread-score` +
+          `?symbol=${encodeURIComponent(symbol)}` +
+          `&expiration=${encodeURIComponent(expiration)}` +
+          `&long_strike=${encodeURIComponent(c.long)}` +
+          `&short_strike=${encodeURIComponent(c.short)}` +
+          `&type=${encodeURIComponent(c.type)}`;
 
         const scoreRes = await fetch(scoreUrl);
         const scoreData = await scoreRes.json();
 
-        if (scoreRes.ok) {
+        if (scoreRes.ok && scoreData?.scores?.total_score != null) {
           results.push(scoreData);
         }
       }
     }
 
-    // 6) Sort by total score
+    // 7) Sort and return top 5 safe spreads
     const sorted = results
       .filter(r => r.eligibility?.is_safe)
       .sort((a, b) => b.scores.total_score - a.scores.total_score)
@@ -69,37 +84,10 @@ export default async function handler(req, res) {
       count: sorted.length,
       top_spreads: sorted
     });
-
   } catch (err) {
     return res.status(500).json({
       error: "internal_error",
       message: err.message
     });
   }
-}
-
-// --- Helper functions ---
-
-function pickExpiration() {
-  // Placeholder: you will replace this with your real logic
-  return "2026-03-20";
-}
-
-function buildCandidates(options) {
-  // Placeholder: build simple 1-wide call spreads
-  const calls = options.filter(o => o.type === "call");
-  const out = [];
-
-  for (let i = 0; i < calls.length - 1; i++) {
-    const long = calls[i];
-    const short = calls[i + 1];
-
-    out.push({
-      type: "call",
-      long: long.strike,
-      short: short.strike
-    });
-  }
-
-  return out;
 }
