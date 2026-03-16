@@ -1,1 +1,47 @@
+export default async function handler(req, res) {
+  const { symbols } = req.query;
+
+  if (!symbols) {
+    return res.status(400).json({
+      error: "missing_symbols",
+      message: "Query parameter 'symbols' is required (comma-separated)."
+    });
+  }
+
+  try {
+    const url = new URL("https://api.tradier.com/v1/markets/quotes");
+    url.searchParams.set("symbols", symbols);
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      return res.status(502).json({
+        error: "provider_error",
+        message: "Tradier returned a non-200 response."
+      });
+    }
+
+    const data = await response.json();
+    const quotes = data?.quotes?.quote;
+
+    if (!quotes) {
+      return res.status(404).json({
+        error: "not_found",
+        message: "No quote data returned for the provided symbols."
+      });
+    }
+
+    // Normalize: Tradier returns an object for 1 symbol, array for many
+    const list = Array.isArray(quotes) ? quotes : [quotes];
+
+    const normalized = list.map(q => ({
+      symbol: q.symbol,
+      last: q.last,
+      bid: q.bid,
+      ask: q.ask,
 
