@@ -1,4 +1,3 @@
-
 export default async function handler(req, res) {
   const { symbol, expiration, long_strike, short_strike, type } = req.query;
 
@@ -10,7 +9,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Fetch chain data for the two strikes
+    // Fetch chain
     const url = new URL("https://api.tradier.com/v1/markets/options/chains");
     url.searchParams.set("symbol", symbol);
     url.searchParams.set("expiration", expiration);
@@ -30,16 +29,18 @@ export default async function handler(req, res) {
     }
 
     const data = await response.json();
-    const options = data?.options?.option;
+    const raw = data?.options?.option;
 
-    if (!options) {
+    if (!raw) {
       return res.status(404).json({
         error: "not_found",
         message: "No options returned for this chain."
       });
     }
 
-    // Extract the two legs
+    const options = Array.isArray(raw) ? raw : [raw];
+
+    // Extract legs
     const longLeg = options.find(
       o => o.strike == long_strike && o.option_type === type
     );
@@ -54,22 +55,97 @@ export default async function handler(req, res) {
       });
     }
 
-    // Compute debit and spread metrics
+    // Validate bid/ask
+    if (
+      longLeg.bid == null || longLeg.ask == null ||
+      shortLeg.bid == null || shortLeg.ask == null
+    ) {
+      return res.status(400).json({
+        error: "invalid_market_data",
+        message: "Missing bid/ask for one or both legs."
+      });
+    }
+
+    // Mid prices
     const longMid = (longLeg.bid + longLeg.ask) / 2;
     const shortMid = (shortLeg.bid + shortLeg.ask) / 2;
+
+    if (!isFinite(longMid) || !isFinite(shortMid)) {
+      return res.status(400).json({
+        error: "invalid_mid",
+        message: "Could not compute mid prices."
+      });
+    }
+
+    // Spread math
     const debit = longMid - shortMid;
     const width = Math.abs(shortLeg.strike - longLeg.strike);
     const maxProfit = width - debit;
 
-    // Auto-detect orientation
+    // Orientation
     const isBull =
       (type === "call" && Number(short_strike) > Number(long_strike)) ||
       (type === "put" && Number(short_strike) < Number(long_strike));
 
     const spreadType = isBull ? "bull" : "bear";
 
-    // Simple scoring bands (you will tune these)
+    // Scoring
     const debitScore =
       debit <= width * 0.25 ? 9 :
       debit <= width * 0.35 ? 7 :
       debit <= width * 0.45 ? 5 :
+      debit <= width * 0.55 ? 3 : 1;
+
+    const riskReward = maxProfit / debit;
+    const rrScore =
+      riskReward >= 3 ? 9 :
+      riskReward >= 2 ? 7 :
+      riskReward >= 1.5 ? 5 :
+      riskReward >= 1.2 ? 3 : 1;
+
+    const liquidityScore =
+      longLeg.bid > 0 && shortLeg.bid > 0 ? 9 :
+      longLeg.ask - longLeg.bid < 0.1 && shortLeg.ask - shortLeg.bid < 0.1 ? 7 :
+      3;
+
+    const totalScore = debitScore + rrScore + liquidityScore;
+
+    // Safety rules
+    const isSafe =
+      debit > 0 &&
+      debit < width &&
+      longLeg.bid != null &&
+      shortLeg.bid != null;
+
+    return res.status(200).json({
+      symbol,
+      expiration,
+      long_strike: Number(long_strike),
+      short_strike: Number(short_strike),
+      type,
+      spreadType,
+      pricing: {
+        longMid,
+        shortMid,
+        debit,
+        width,
+        maxProfit
+      },
+      scores: {
+        debitScore,
+        rrScore,
+        liquidityScore,
+        total_score: totalScore
+      },
+      eligibility: {
+        is_safe: isSafe
+      }
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      error: "internal_error",
+      message: err.message
+    });
+  }
+}
