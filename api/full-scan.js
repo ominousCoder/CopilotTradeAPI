@@ -12,14 +12,19 @@ export default async function handler(req, res) {
   }
 
   try {
+    const BASE = process.env.SITE_URL;
+    if (!BASE) {
+      return res.status(500).json({
+        error: "missing_base_url",
+        message: "Environment variable SITE_URL is not set."
+      });
+    }
+
     const results = [];
 
     // 1) Fetch quotes for all symbols
-    const batchRes = await fetch(
-      `/api/batch-scan?symbols=${encodeURIComponent(symbols)}`,
-      { headers: { Host: req.headers.host } }
-    );
-
+    const batchUrl = `${BASE}/api/batch-scan?symbols=${encodeURIComponent(symbols)}`;
+    const batchRes = await fetch(batchUrl);
     const batchData = await batchRes.json();
 
     if (!batchRes.ok || !batchData?.data) {
@@ -41,12 +46,10 @@ export default async function handler(req, res) {
       if (!expiration) continue;
 
       // 4) Fetch chain
-      const chainRes = await fetch(
-        `/api/chain?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}`,
-        { headers: { Host: req.headers.host } }
-      );
-
+      const chainUrl = `${BASE}/api/chain?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}`;
+      const chainRes = await fetch(chainUrl);
       const chainData = await chainRes.json();
+
       if (!chainRes.ok || !chainData?.options?.length) continue;
 
       // 5) Build candidate spreads
@@ -55,12 +58,17 @@ export default async function handler(req, res) {
 
       // 6) Score each candidate
       for (const c of candidates) {
-        const scoreRes = await fetch(
-          `/api/spread-score?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}&long_strike=${encodeURIComponent(c.long)}&short_strike=${encodeURIComponent(c.short)}&type=${encodeURIComponent(c.type)}`,
-          { headers: { Host: req.headers.host } }
-        );
+        const scoreUrl =
+          `${BASE}/api/spread-score` +
+          `?symbol=${encodeURIComponent(symbol)}` +
+          `&expiration=${encodeURIComponent(expiration)}` +
+          `&long_strike=${encodeURIComponent(c.long)}` +
+          `&short_strike=${encodeURIComponent(c.short)}` +
+          `&type=${encodeURIComponent(c.type)}`;
 
+        const scoreRes = await fetch(scoreUrl);
         const scoreData = await scoreRes.json();
+
         if (scoreRes.ok && scoreData?.scores?.total_score != null) {
           results.push(scoreData);
         }
