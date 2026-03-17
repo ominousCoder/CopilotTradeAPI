@@ -12,14 +12,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const origin = req.headers.origin;
     const results = [];
 
     // 1) Fetch quotes for all symbols
-    const batchUrl = `${origin}/api/batch-scan?symbols=${encodeURIComponent(
-      symbols
-    )}`;
-    const batchRes = await fetch(batchUrl);
+    const batchRes = await fetch(
+      `/api/batch-scan?symbols=${encodeURIComponent(symbols)}`,
+      { headers: { Host: req.headers.host } }
+    );
+
     const batchData = await batchRes.json();
 
     if (!batchRes.ok || !batchData?.data) {
@@ -41,15 +41,13 @@ export default async function handler(req, res) {
       if (!expiration) continue;
 
       // 4) Fetch chain
-      const chainUrl = `${origin}/api/chain?symbol=${encodeURIComponent(
-        symbol
-      )}&expiration=${encodeURIComponent(expiration)}`;
-      const chainRes = await fetch(chainUrl);
-      const chainData = await chainRes.json();
+      const chainRes = await fetch(
+        `/api/chain?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}`,
+        { headers: { Host: req.headers.host } }
+      );
 
-      if (!chainRes.ok || !chainData?.options || !chainData.options.length) {
-        continue;
-      }
+      const chainData = await chainRes.json();
+      if (!chainRes.ok || !chainData?.options?.length) continue;
 
       // 5) Build candidate spreads
       const candidates = buildCandidates(chainData.options, underlyingPrice);
@@ -57,17 +55,12 @@ export default async function handler(req, res) {
 
       // 6) Score each candidate
       for (const c of candidates) {
-        const scoreUrl =
-          `${origin}/api/spread-score` +
-          `?symbol=${encodeURIComponent(symbol)}` +
-          `&expiration=${encodeURIComponent(expiration)}` +
-          `&long_strike=${encodeURIComponent(c.long)}` +
-          `&short_strike=${encodeURIComponent(c.short)}` +
-          `&type=${encodeURIComponent(c.type)}`;
+        const scoreRes = await fetch(
+          `/api/spread-score?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}&long_strike=${encodeURIComponent(c.long)}&short_strike=${encodeURIComponent(c.short)}&type=${encodeURIComponent(c.type)}`,
+          { headers: { Host: req.headers.host } }
+        );
 
-        const scoreRes = await fetch(scoreUrl);
         const scoreData = await scoreRes.json();
-
         if (scoreRes.ok && scoreData?.scores?.total_score != null) {
           results.push(scoreData);
         }
@@ -84,6 +77,7 @@ export default async function handler(req, res) {
       count: sorted.length,
       top_spreads: sorted
     });
+
   } catch (err) {
     return res.status(500).json({
       error: "internal_error",
