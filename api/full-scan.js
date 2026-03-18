@@ -1,36 +1,13 @@
 // api/full-scan.js
 
 import scoreSpread from "./spread-score";
-import { fetchOptionChain, buildSpreads } from "./chain-helpers";
+import {
+  fetchExpirations,
+  filterExpirations,
+  fetchOptionChain,
+  buildSpreads
+} from "./chain-helpers";
 
-// ------------------------------------------------------------
-// Expiration picker: this Friday, next Friday, 3 weeks out
-// ------------------------------------------------------------
-function getFridayTimestamp(weeksAhead = 0) {
-  const now = new Date();
-  const day = now.getDay(); // 0=Sun, 5=Fri
-  const diffToFriday = (5 - day + 7) % 7;
-
-  const target = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + diffToFriday + weeksAhead * 7
-  );
-
-  return Math.floor(target.getTime() / 1000); // Yahoo requires seconds
-}
-
-function pickExpirations() {
-  return [
-    getFridayTimestamp(0),  // this week
-    getFridayTimestamp(1),  // next week
-    getFridayTimestamp(3)   // three weeks out
-  ];
-}
-
-// ------------------------------------------------------------
-// Main handler
-// ------------------------------------------------------------
 export default async function handler(req, res) {
   try {
     const { symbols } = req.query;
@@ -42,10 +19,12 @@ export default async function handler(req, res) {
     const tickers = symbols.split(",");
     let allSpreads = [];
 
-    const expirations = pickExpirations();
     const allowedWidths = [0.5, 1, 2, 2.5, 5];
 
     for (const symbol of tickers) {
+      const allExps = await fetchExpirations(symbol);
+      const expirations = filterExpirations(allExps);
+
       for (const expiration of expirations) {
         const chain = await fetchOptionChain(symbol, expiration);
         if (!chain) continue;
@@ -54,12 +33,15 @@ export default async function handler(req, res) {
         if (!spreads || spreads.length === 0) continue;
 
         for (const sp of spreads) {
+          const longMid = (sp.long.bid + sp.long.ask) / 2;
+          const shortMid = (sp.short.bid + sp.short.ask) / 2;
+
           const score = scoreSpread({
-            longMid: sp.long.mid,
-            shortMid: sp.short.mid,
+            longMid,
+            shortMid,
             width: sp.width,
-            bidAskSpread: sp.long.ask - sp.long.bid + (sp.short.ask - sp.short.bid),
-            midPrice: (sp.long.mid - sp.short.mid)
+            bidAskSpread: (sp.long.ask - sp.long.bid) + (sp.short.ask - sp.short.bid),
+            midPrice: longMid - shortMid
           });
 
           allSpreads.push({
@@ -70,8 +52,8 @@ export default async function handler(req, res) {
             type: sp.type,
             spreadType: sp.type === "bull" ? "bull_call" : "bear_put",
             pricing: {
-              longMid: sp.long.mid,
-              shortMid: sp.short.mid,
+              longMid,
+              shortMid,
               debit: score.debit,
               width: sp.width,
               maxProfit: score.maxProfit
