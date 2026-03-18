@@ -1,8 +1,9 @@
 // ============================================================
-// chain-helpers.js — TRADIER VERSION (7–45 DTE, FIRST 10)
+// chain-helpers.js — TRADIER VERSION (ENV-DRIVEN BASE URL)
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
+const BASE = process.env.TRADIER_BASE_URL;   // <— dynamic base URL
 
 function debug(lines) {
   if (!DEBUG) return;
@@ -19,7 +20,7 @@ function warn(message) {
 // Fetch all expirations for a symbol
 // ------------------------------------------------------------
 async function fetchExpirations(symbol) {
-  const url = `https://api.tradier.com/v1/markets/options/expirations?symbol=${symbol}&includeAllRoots=true&strikes=true`;
+  const url = `${BASE}/markets/options/expirations?symbol=${symbol}&includeAllRoots=true&strikes=true`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -46,7 +47,7 @@ function filterExpirations(expirations) {
       return { exp, dte };
     })
     .filter((x) => x.dte >= 7 && x.dte <= 45)
-    .sort((a, b) => a.dte - b.dte) // nearest first
+    .sort((a, b) => a.dte - b.dte)
     .slice(0, 10);
 
   debug([
@@ -62,7 +63,7 @@ function filterExpirations(expirations) {
 // Fetch option chain for a specific expiration
 // ------------------------------------------------------------
 async function fetchOptionChain(symbol, expiration) {
-  const url = `https://api.tradier.com/v1/markets/options/chains?symbol=${symbol}&expiration=${expiration}`;
+  const url = `${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -127,13 +128,11 @@ function normalizeDeltas(options, underlying) {
 // Select mid-delta long legs
 // ------------------------------------------------------------
 function selectBullLongLegs(calls) {
-  const mids = calls.filter((c) => c.delta >= 0.25 && c.delta <= 0.35);
-  return mids;
+  return calls.filter((c) => c.delta >= 0.25 && c.delta <= 0.35);
 }
 
 function selectBearLongLegs(puts) {
-  const mids = puts.filter((p) => Math.abs(p.delta) >= 0.25 && Math.abs(p.delta) <= 0.35);
-  return mids;
+  return puts.filter((p) => Math.abs(p.delta) >= 0.25 && Math.abs(p.delta) <= 0.35);
 }
 
 // ------------------------------------------------------------
