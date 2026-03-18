@@ -50,28 +50,28 @@ export default async function handler(req, res) {
         const chain = await fetchOptionChain(symbol, expiration);
         if (!chain) continue;
 
-        const spreads = await buildSpreads(symbol, expiration, allowedWidths);
+        const spreads = await buildSpreads(chain, symbol, expiration, allowedWidths);
         if (!spreads || spreads.length === 0) continue;
 
         for (const sp of spreads) {
           const score = scoreSpread({
-            longMid: sp.longMid,
-            shortMid: sp.shortMid,
+            longMid: sp.long.mid,
+            shortMid: sp.short.mid,
             width: sp.width,
-            bidAskSpread: sp.bidAskSpread,
-            midPrice: sp.midPrice
+            bidAskSpread: sp.long.ask - sp.long.bid + (sp.short.ask - sp.short.bid),
+            midPrice: (sp.long.mid - sp.short.mid)
           });
 
           allSpreads.push({
             symbol,
             expiration,
-            long_strike: sp.longStrike,
-            short_strike: sp.shortStrike,
+            long_strike: sp.long.strike,
+            short_strike: sp.short.strike,
             type: sp.type,
-            spreadType: sp.spreadType,
+            spreadType: sp.type === "bull" ? "bull_call" : "bear_put",
             pricing: {
-              longMid: sp.longMid,
-              shortMid: sp.shortMid,
+              longMid: sp.long.mid,
+              shortMid: sp.short.mid,
               debit: score.debit,
               width: sp.width,
               maxProfit: score.maxProfit
@@ -82,16 +82,14 @@ export default async function handler(req, res) {
               liquidityScore: score.liquidityScore,
               total_score: score.total_score
             },
-            eligibility: { is_safe: sp.isSafe }
+            eligibility: { is_safe: true }
           });
         }
       }
     }
 
-    // Sort by fractional total_score
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
 
-    // Return top 5
     const top_spreads = allSpreads.slice(0, 5);
 
     return res.status(200).json({
