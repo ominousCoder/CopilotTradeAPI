@@ -1,7 +1,7 @@
 // api/full-scan.js
 
 import scoreSpread from "./spread-score";
-import { fetchOptionChain, buildSpreads } from "./chain";
+import { fetchOptionChain, buildSpreads } from "./chain-helpers";
 
 export default async function handler(req, res) {
   try {
