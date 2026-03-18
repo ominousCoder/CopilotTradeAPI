@@ -3,6 +3,34 @@
 import scoreSpread from "./spread-score";
 import { fetchOptionChain, buildSpreads } from "./chain-helpers";
 
+// ------------------------------------------------------------
+// Expiration picker: this Friday, next Friday, 3 weeks out
+// ------------------------------------------------------------
+function getFridayTimestamp(weeksAhead = 0) {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun, 5=Fri
+  const diffToFriday = (5 - day + 7) % 7;
+
+  const target = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + diffToFriday + weeksAhead * 7
+  );
+
+  return Math.floor(target.getTime() / 1000); // Yahoo requires seconds
+}
+
+function pickExpirations() {
+  return [
+    getFridayTimestamp(0),  // this week
+    getFridayTimestamp(1),  // next week
+    getFridayTimestamp(3)   // three weeks out
+  ];
+}
+
+// ------------------------------------------------------------
+// Main handler
+// ------------------------------------------------------------
 export default async function handler(req, res) {
   try {
     const { symbols } = req.query;
@@ -14,43 +42,49 @@ export default async function handler(req, res) {
     const tickers = symbols.split(",");
     let allSpreads = [];
 
+    const expirations = pickExpirations();
+    const allowedWidths = [0.5, 1, 2, 2.5, 5];
+
     for (const symbol of tickers) {
-      const chain = await fetchOptionChain(symbol);
-      if (!chain) continue;
+      for (const expiration of expirations) {
+        const chain = await fetchOptionChain(symbol, expiration);
+        if (!chain) continue;
 
-      const spreads = buildSpreads(chain);
+        const spreads = await buildSpreads(symbol, expiration, allowedWidths);
+        if (!spreads || spreads.length === 0) continue;
 
-      for (const sp of spreads) {
-        const score = scoreSpread({
-          longMid: sp.longMid,
-          shortMid: sp.shortMid,
-          width: sp.width,
-          bidAskSpread: sp.bidAskSpread,
-          midPrice: sp.midPrice
-        });
-
-        allSpreads.push({
-          symbol,
-          expiration: sp.expiration,
-          long_strike: sp.longStrike,
-          short_strike: sp.shortStrike,
-          type: sp.type,
-          spreadType: sp.spreadType,
-          pricing: {
+        for (const sp of spreads) {
+          const score = scoreSpread({
             longMid: sp.longMid,
             shortMid: sp.shortMid,
-            debit: score.debit,
             width: sp.width,
-            maxProfit: score.maxProfit
-          },
-          scores: {
-            debitScore: score.debitScore,
-            rrScore: score.rrScore,
-            liquidityScore: score.liquidityScore,
-            total_score: score.total_score
-          },
-          eligibility: { is_safe: sp.isSafe }
-        });
+            bidAskSpread: sp.bidAskSpread,
+            midPrice: sp.midPrice
+          });
+
+          allSpreads.push({
+            symbol,
+            expiration,
+            long_strike: sp.longStrike,
+            short_strike: sp.shortStrike,
+            type: sp.type,
+            spreadType: sp.spreadType,
+            pricing: {
+              longMid: sp.longMid,
+              shortMid: sp.shortMid,
+              debit: score.debit,
+              width: sp.width,
+              maxProfit: score.maxProfit
+            },
+            scores: {
+              debitScore: score.debitScore,
+              rrScore: score.rrScore,
+              liquidityScore: score.liquidityScore,
+              total_score: score.total_score
+            },
+            eligibility: { is_safe: sp.isSafe }
+          });
+        }
       }
     }
 
