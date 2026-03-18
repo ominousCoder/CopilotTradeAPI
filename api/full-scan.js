@@ -1,95 +1,72 @@
-import { pickExpiration } from "./utils/pickExpiration.js";
-import { buildCandidates } from "./utils/buildCandidates.js";
+// api/full-scan.js
+
+import scoreSpread from "./spread-score";
+import { fetchOptionChain, buildSpreads } from "./chain";
 
 export default async function handler(req, res) {
-  const { symbols } = req.query;
-
-  if (!symbols) {
-    return res.status(400).json({
-      error: "missing_symbols",
-      message: "Query parameter 'symbols' is required (comma-separated)."
-    });
-  }
-
   try {
-    const BASE = process.env.SITE_URL;
-    if (!BASE) {
-      return res.status(500).json({
-        error: "missing_base_url",
-        message: "Environment variable SITE_URL is not set."
-      });
+    const { symbols } = req.query;
+
+    if (!symbols) {
+      return res.status(400).json({ error: "Missing symbols parameter" });
     }
 
-    const results = [];
+    const tickers = symbols.split(",");
+    let allSpreads = [];
 
-    // 1) Fetch quotes for all symbols
-    const batchUrl = `${BASE}/api/batch-scan?symbols=${encodeURIComponent(symbols)}`;
-    const batchRes = await fetch(batchUrl);
-    const batchData = await batchRes.json();
+    for (const symbol of tickers) {
+      const chain = await fetchOptionChain(symbol);
+      if (!chain) continue;
 
-    if (!batchRes.ok || !batchData?.data) {
-      return res.status(502).json({
-        error: "batch_scan_failed",
-        message: batchData?.message || "Batch scan failed."
-      });
-    }
+      const spreads = buildSpreads(chain);
 
-    // 2) Loop through each symbol
-    for (const q of batchData.data) {
-      const symbol = q.symbol;
-      const underlyingPrice = q.last;
+      for (const sp of spreads) {
+        const score = scoreSpread({
+          longMid: sp.longMid,
+          shortMid: sp.shortMid,
+          width: sp.width,
+          bidAskSpread: sp.bidAskSpread,
+          midPrice: sp.midPrice
+        });
 
-      if (!symbol || !underlyingPrice || underlyingPrice <= 0) continue;
-
-      // 3) Pick expiration
-      const expiration = await pickExpiration(symbol);
-      if (!expiration) continue;
-
-      // 4) Fetch chain
-      const chainUrl = `${BASE}/api/chain?symbol=${encodeURIComponent(symbol)}&expiration=${encodeURIComponent(expiration)}`;
-      const chainRes = await fetch(chainUrl);
-      const chainData = await chainRes.json();
-
-      if (!chainRes.ok || !chainData?.options?.length) continue;
-
-      // 5) Build candidate spreads
-      const candidates = buildCandidates(chainData.options, underlyingPrice);
-      if (!candidates.length) continue;
-
-      // 6) Score each candidate
-      for (const c of candidates) {
-        const scoreUrl =
-          `${BASE}/api/spread-score` +
-          `?symbol=${encodeURIComponent(symbol)}` +
-          `&expiration=${encodeURIComponent(expiration)}` +
-          `&long_strike=${encodeURIComponent(c.long)}` +
-          `&short_strike=${encodeURIComponent(c.short)}` +
-          `&type=${encodeURIComponent(c.type)}`;
-
-        const scoreRes = await fetch(scoreUrl);
-        const scoreData = await scoreRes.json();
-
-        if (scoreRes.ok && scoreData?.scores?.total_score != null) {
-          results.push(scoreData);
-        }
+        allSpreads.push({
+          symbol,
+          expiration: sp.expiration,
+          long_strike: sp.longStrike,
+          short_strike: sp.shortStrike,
+          type: sp.type,
+          spreadType: sp.spreadType,
+          pricing: {
+            longMid: sp.longMid,
+            shortMid: sp.shortMid,
+            debit: score.debit,
+            width: sp.width,
+            maxProfit: score.maxProfit
+          },
+          scores: {
+            debitScore: score.debitScore,
+            rrScore: score.rrScore,
+            liquidityScore: score.liquidityScore,
+            total_score: score.total_score
+          },
+          eligibility: { is_safe: sp.isSafe }
+        });
       }
     }
 
-    // 7) Sort and return top 5 safe spreads
-    const sorted = results
-      .filter(r => r.eligibility?.is_safe)
-      .sort((a, b) => b.scores.total_score - a.scores.total_score)
-      .slice(0, 5);
+    // Sort by fractional total_score
+    allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
+
+    // Return top 5
+    const top_spreads = allSpreads.slice(0, 5);
 
     return res.status(200).json({
-      count: sorted.length,
-      top_spreads: sorted
+      count: top_spreads.length,
+      top_spreads
     });
 
   } catch (err) {
-    return res.status(500).json({
-      error: "internal_error",
-      message: err.message
-    });
+    console.error("Full scan error:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 }
