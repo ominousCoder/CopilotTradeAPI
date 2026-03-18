@@ -1,5 +1,3 @@
-// api/full-scan.js
-
 import scoreSpread from "./spread-score";
 import {
   fetchExpirations,
