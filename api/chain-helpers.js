@@ -1,5 +1,5 @@
 // ============================================================
-// chain-helpers.js — LIGHTWEIGHT DIAGNOSTIC VERSION
+// chain-helpers.js — LIGHTWEIGHT DIAGNOSTIC VERSION (FIXED)
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
@@ -188,10 +188,9 @@ function buildBearSpreads(longLegs, puts, widths) {
 }
 
 // ------------------------------------------------------------
-// Main builder
+// Main builder (NO FETCH INSIDE — FIXED)
 // ------------------------------------------------------------
-async function buildSpreads(symbol, expiration, widths) {
-  const chain = await fetchOptionChain(symbol, expiration);
+async function buildSpreads(chain, symbol, expiration, widths) {
   if (!chain) return [];
 
   const underlying = resolveUnderlyingPrice(chain);
