@@ -1,188 +1,235 @@
-// api/chain-helpers.js
+// ============================================================
+// chain-helpers.js — LIGHTWEIGHT DIAGNOSTIC VERSION
+// ============================================================
 
-const ALLOWED_WIDTHS = [0.5, 1, 2, 2.5, 5];
-const MIN_DELTA = 0.2;
-const MAX_DELTA = 0.35;
+const DEBUG = process.env.DEBUG === "true";
 
-// Small helper to compare float widths safely
-function isAllowedWidth(width) {
-  return ALLOWED_WIDTHS.some(w => Math.abs(width - w) < 1e-6);
+function debug(lines) {
+  if (!DEBUG) return;
+  console.log("[DEBUG][chain-helpers]");
+  lines.forEach((l) => console.log(l));
 }
 
-export async function fetchOptionChain(symbol) {
-  // 1) Get expirations
-  const expUrl = new URL("https://api.tradier.com/v1/markets/options/expirations");
-  expUrl.searchParams.set("symbol", symbol);
-  expUrl.searchParams.set("includeAllRoots", "true");
-  expUrl.searchParams.set("strikes", "false");
-
-  const expResponse = await fetch(expUrl.toString(), {
-    headers: {
-      Authorization: `Bearer ${process.env.TRADIER_KEY}`,
-      Accept: "application/json"
-    }
-  });
-
-  if (!expResponse.ok) {
-    console.error(`Expirations fetch failed for ${symbol}:`, expResponse.status, await expResponse.text());
-    return null;
-  }
-
-  const expData = await expResponse.json();
-  const expirations = expData?.expirations?.date;
-  if (!expirations || expirations.length === 0) {
-    console.error(`No expirations found for ${symbol}`);
-    return null;
-  }
-
-  // For now: use the nearest expiration
-  const expiration = Array.isArray(expirations) ? expirations[0] : expirations;
-
-  // 2) Get option chain (with greeks so we have delta)
-  const chainUrl = new URL("https://api.tradier.com/v1/markets/options/chains");
-  chainUrl.searchParams.set("symbol", symbol);
-  chainUrl.searchParams.set("expiration", expiration);
-  chainUrl.searchParams.set("greeks", "true");
-
-  const response = await fetch(chainUrl.toString(), {
-    headers: {
-      Authorization: `Bearer ${process.env.TRADIER_KEY}`,
-      Accept: "application/json"
-    }
-  });
-
-  if (!response.ok) {
-    console.error(`Chain fetch failed for ${symbol}:`, response.status, await response.text());
-    return null;
-  }
-
-  const data = await response.json();
-  const raw = data?.options?.option;
-  if (!raw) {
-    console.error(`No options data for ${symbol}`);
-    return null;
-  }
-
-  const chain = Array.isArray(raw) ? raw : [raw];
-
-  // Normalize a bit and filter out totally unusable quotes
-  return chain.filter(opt => {
-    const hasBidAsk = typeof opt.bid === "number" && typeof opt.ask === "number";
-    const hasStrike = typeof opt.strike === "number";
-    const hasDelta = typeof opt.delta === "number";
-    return hasBidAsk && hasStrike && hasDelta;
-  });
+function warn(message) {
+  if (!DEBUG) return;
+  console.log("[DEBUG][chain-helpers] WARNING:", message);
 }
 
-// Build bull call debit spreads (defined risk, mid-delta)
-export function buildBullSpreads(chain) {
+// ------------------------------------------------------------
+// Fetch option chain
+// ------------------------------------------------------------
+async function fetchOptionChain(symbol, expiration) {
+  const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}?date=${expiration}`;
+
+  const res = await fetch(url);
+  const json = await res.json();
+
+  const chain = json?.optionChain?.result?.[0];
+  if (!chain) {
+    warn(`No chain returned for ${symbol} @ ${expiration}`);
+    return null;
+  }
+
+  const calls = chain.options?.[0]?.calls?.length ?? 0;
+  const puts = chain.options?.[0]?.puts?.length ?? 0;
+
+  debug([
+    `Stage: Chain Fetch`,
+    `Symbol: ${symbol}`,
+    `Expiration: ${expiration}`,
+    `Calls: ${calls}`,
+    `Puts: ${puts}`
+  ]);
+
+  return chain;
+}
+
+// ------------------------------------------------------------
+// Resolve underlying price
+// ------------------------------------------------------------
+function resolveUnderlyingPrice(chain) {
+  let price = null;
+  let source = "unknown";
+
+  if (chain?.quote?.regularMarketPrice) {
+    price = chain.quote.regularMarketPrice;
+    source = "quote endpoint";
+  } else {
+    const calls = chain.options?.[0]?.calls ?? [];
+    if (calls.length > 0) {
+      const atm = calls.reduce((a, b) =>
+        Math.abs(b.strike - price) < Math.abs(a.strike - price) ? b : a
+      );
+      price = atm.strike;
+      source = "ATM fallback";
+    }
+  }
+
+  if (!price) warn("Underlying price could not be resolved.");
+
+  debug([
+    "Stage: Underlying Price Resolution",
+    `Underlying price: ${price}`,
+    `Source: ${source}`
+  ]);
+
+  return price;
+}
+
+// ------------------------------------------------------------
+// Normalize deltas
+// ------------------------------------------------------------
+function normalizeDeltas(options) {
+  let missing = 0;
+  let fallback = 0;
+
+  const normalized = options.map((opt) => {
+    if (opt.delta == null) {
+      missing++;
+      const approx = Math.max(0.05, Math.min(0.95, 1 - Math.abs(opt.moneyness)));
+      fallback++;
+      return { ...opt, delta: approx };
+    }
+    return opt;
+  });
+
+  debug([
+    "Stage: Delta Normalization",
+    `Options: ${options.length}`,
+    `Missing deltas: ${missing}`,
+    `Fallback applied: ${fallback}`
+  ]);
+
+  return normalized;
+}
+
+// ------------------------------------------------------------
+// Select bull long legs
+// ------------------------------------------------------------
+function selectBullLongLegs(calls) {
+  const mids = calls.filter((c) => c.delta >= 0.25 && c.delta <= 0.35);
+
+  if (mids.length === 0) warn("No mid-delta calls found.");
+
+  debug([
+    "Stage: Bull Long-Leg Selection",
+    `Candidates: ${mids.length}`
+  ]);
+
+  return mids;
+}
+
+// ------------------------------------------------------------
+// Select bear long legs
+// ------------------------------------------------------------
+function selectBearLongLegs(puts) {
+  const mids = puts.filter((p) => Math.abs(p.delta) >= 0.25 && Math.abs(p.delta) <= 0.35);
+
+  if (mids.length === 0) warn("No mid-delta puts found.");
+
+  debug([
+    "Stage: Bear Long-Leg Selection",
+    `Candidates: ${mids.length}`
+  ]);
+
+  return mids;
+}
+
+// ------------------------------------------------------------
+// Build bull spreads
+// ------------------------------------------------------------
+function buildBullSpreads(longLegs, calls, widths) {
   const spreads = [];
 
-  // Long leg: call, mid-delta
-  const longCandidates = chain.filter(opt => {
-    return (
-      opt.option_type === "call" &&
-      typeof opt.delta === "number" &&
-      opt.delta >= MIN_DELTA &&
-      opt.delta <= MAX_DELTA
-    );
+  longLegs.forEach((long) => {
+    widths.forEach((w) => {
+      const short = calls.find((c) => c.strike === long.strike + w);
+      if (short) {
+        spreads.push({ type: "bull", long, short, width: w });
+      }
+    });
   });
 
-  // Short leg: call above long, width in allowed set
-  for (const long of longCandidates) {
-    const longStrike = long.strike;
-    const longMid = (long.bid + long.ask) / 2;
+  if (spreads.length === 0) warn("No bull spreads built.");
 
-    const shortCandidates = chain.filter(opt => {
-      if (opt.option_type !== "call") return false;
-      if (opt.strike <= longStrike) return false;
-
-      const width = opt.strike - longStrike;
-      return isAllowedWidth(width);
-    });
-
-    for (const short of shortCandidates) {
-      const shortStrike = short.strike;
-      const shortMid = (short.bid + short.ask) / 2;
-      const width = shortStrike - longStrike;
-      const bidAskSpread = long.ask - long.bid;
-      const midPrice = longMid;
-
-      spreads.push({
-        expiration: long.expiration_date,
-        longStrike,
-        shortStrike,
-        longMid,
-        shortMid,
-        width,
-        bidAskSpread,
-        midPrice,
-        type: "call",
-        spreadType: "bull",
-        isSafe: true
-      });
-    }
-  }
+  debug([
+    "Stage: Bull Spread Construction",
+    `Long legs: ${longLegs.length}`,
+    `Spreads built: ${spreads.length}`
+  ]);
 
   return spreads;
 }
 
-// Build bear put debit spreads (defined risk, mid-delta)
-export function buildBearSpreads(chain) {
+// ------------------------------------------------------------
+// Build bear spreads
+// ------------------------------------------------------------
+function buildBearSpreads(longLegs, puts, widths) {
   const spreads = [];
 
-  // Long leg: put, mid-delta
-  const longCandidates = chain.filter(opt => {
-    return (
-      opt.option_type === "put" &&
-      typeof opt.delta === "number" &&
-      opt.delta >= MIN_DELTA &&
-      opt.delta <= MAX_DELTA
-    );
+  longLegs.forEach((long) => {
+    widths.forEach((w) => {
+      const short = puts.find((p) => p.strike === long.strike - w);
+      if (short) {
+        spreads.push({ type: "bear", long, short, width: w });
+      }
+    });
   });
 
-  // Short leg: put below long, width in allowed set
-  for (const long of longCandidates) {
-    const longStrike = long.strike;
-    const longMid = (long.bid + long.ask) / 2;
+  if (spreads.length === 0) warn("No bear spreads built.");
 
-    const shortCandidates = chain.filter(opt => {
-      if (opt.option_type !== "put") return false;
-      if (opt.strike >= longStrike) return false;
-
-      const width = longStrike - opt.strike;
-      return isAllowedWidth(width);
-    });
-
-    for (const short of shortCandidates) {
-      const shortStrike = short.strike;
-      const shortMid = (short.bid + short.ask) / 2;
-      const width = longStrike - shortStrike;
-      const bidAskSpread = long.ask - long.bid;
-      const midPrice = longMid;
-
-      spreads.push({
-        expiration: long.expiration_date,
-        longStrike,
-        shortStrike,
-        longMid,
-        shortMid,
-        width,
-        bidAskSpread,
-        midPrice,
-        type: "put",
-        spreadType: "bear",
-        isSafe: true
-      });
-    }
-  }
+  debug([
+    "Stage: Bear Spread Construction",
+    `Long legs: ${longLegs.length}`,
+    `Spreads built: ${spreads.length}`
+  ]);
 
   return spreads;
 }
 
-// Unified builder used by full-scan.js
-export function buildSpreads(chain) {
-  const bull = buildBullSpreads(chain);
-  const bear = buildBearSpreads(chain);
-  return [...bull, ...bear];
+// ------------------------------------------------------------
+// Main builder
+// ------------------------------------------------------------
+async function buildSpreads(symbol, expiration, widths) {
+  const chain = await fetchOptionChain(symbol, expiration);
+  if (!chain) return [];
+
+  const underlying = resolveUnderlyingPrice(chain);
+
+  const calls = chain.options[0].calls.map((c) => ({
+    ...c,
+    moneyness: (underlying - c.strike) / underlying
+  }));
+
+  const puts = chain.options[0].puts.map((p) => ({
+    ...p,
+    moneyness: (p.strike - underlying) / underlying
+  }));
+
+  const normCalls = normalizeDeltas(calls);
+  const normPuts = normalizeDeltas(puts);
+
+  const bullLongs = selectBullLongLegs(normCalls);
+  const bearLongs = selectBearLongLegs(normPuts);
+
+  const bullSpreads = buildBullSpreads(bullLongs, normCalls, widths);
+  const bearSpreads = buildBearSpreads(bearLongs, normPuts, widths);
+
+  const all = [...bullSpreads, ...bearSpreads];
+
+  if (all.length === 0) warn("All spreads filtered out.");
+
+  debug([
+    "Stage: Final Spread Count",
+    `Bull: ${bullSpreads.length}`,
+    `Bear: ${bearSpreads.length}`,
+    `Total: ${all.length}`
+  ]);
+
+  return all;
 }
+
+module.exports = {
+  fetchOptionChain,
+  buildSpreads
+};
