@@ -1,5 +1,5 @@
 // ============================================================
-// chain-helpers.js — LIGHTWEIGHT DIAGNOSTIC VERSION (FIXED)
+// chain-helpers.js — TRADIER VERSION (7–45 DTE, FIRST 10)
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
@@ -16,81 +16,101 @@ function warn(message) {
 }
 
 // ------------------------------------------------------------
-// Fetch option chain
+// Fetch all expirations for a symbol
+// ------------------------------------------------------------
+async function fetchExpirations(symbol) {
+  const url = `https://api.tradier.com/v1/markets/options/expirations?symbol=${symbol}&includeAllRoots=true&strikes=true`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+      Accept: "application/json"
+    }
+  });
+
+  const json = await res.json();
+  return json?.expirations?.date ?? [];
+}
+
+// ------------------------------------------------------------
+// Filter expirations to 7–45 DTE and take first 10
+// ------------------------------------------------------------
+function filterExpirations(expirations) {
+  const today = new Date();
+
+  const filtered = expirations
+    .map((exp) => {
+      const d = new Date(exp);
+      const dte = Math.round((d - today) / 86400000);
+      return { exp, dte };
+    })
+    .filter((x) => x.dte >= 7 && x.dte <= 45)
+    .sort((a, b) => a.dte - b.dte) // nearest first
+    .slice(0, 10);
+
+  debug([
+    "Stage: Expiration Filtering",
+    `Total expirations: ${expirations.length}`,
+    `Filtered (7–45 DTE): ${filtered.length}`
+  ]);
+
+  return filtered.map((x) => x.exp);
+}
+
+// ------------------------------------------------------------
+// Fetch option chain for a specific expiration
 // ------------------------------------------------------------
 async function fetchOptionChain(symbol, expiration) {
-  const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}?date=${expiration}`;
+  const url = `https://api.tradier.com/v1/markets/options/chains?symbol=${symbol}&expiration=${expiration}`;
 
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+      Accept: "application/json"
+    }
+  });
+
   const json = await res.json();
+  const options = json?.options?.option;
 
-  const chain = json?.optionChain?.result?.[0];
-  if (!chain) {
-    warn(`No chain returned for ${symbol} @ ${expiration}`);
+  if (!options || options.length === 0) {
+    warn(`No options returned for ${symbol} @ ${expiration}`);
     return null;
   }
 
-  const calls = chain.options?.[0]?.calls?.length ?? 0;
-  const puts = chain.options?.[0]?.puts?.length ?? 0;
+  const underlying = json?.underlying?.last;
 
   debug([
-    `Stage: Chain Fetch`,
+    "Stage: Chain Fetch",
     `Symbol: ${symbol}`,
     `Expiration: ${expiration}`,
-    `Calls: ${calls}`,
-    `Puts: ${puts}`
+    `Options: ${options.length}`,
+    `Underlying: ${underlying}`
   ]);
 
-  return chain;
+  return { underlying, options };
 }
 
 // ------------------------------------------------------------
-// Resolve underlying price
+// Normalize deltas (fallback enabled)
 // ------------------------------------------------------------
-function resolveUnderlyingPrice(chain) {
-  let price = null;
-  let source = "unknown";
-
-  if (chain?.quote?.regularMarketPrice) {
-    price = chain.quote.regularMarketPrice;
-    source = "quote endpoint";
-  } else {
-    const calls = chain.options?.[0]?.calls ?? [];
-    if (calls.length > 0) {
-      const atm = calls.reduce((a, b) =>
-        Math.abs(b.strike - price) < Math.abs(a.strike - price) ? b : a
-      );
-      price = atm.strike;
-      source = "ATM fallback";
-    }
-  }
-
-  if (!price) warn("Underlying price could not be resolved.");
-
-  debug([
-    "Stage: Underlying Price Resolution",
-    `Underlying price: ${price}`,
-    `Source: ${source}`
-  ]);
-
-  return price;
-}
-
-// ------------------------------------------------------------
-// Normalize deltas
-// ------------------------------------------------------------
-function normalizeDeltas(options) {
+function normalizeDeltas(options, underlying) {
   let missing = 0;
   let fallback = 0;
 
   const normalized = options.map((opt) => {
-    if (opt.delta == null) {
+    let delta = opt.greeks?.delta;
+
+    if (delta == null) {
       missing++;
-      const approx = Math.max(0.05, Math.min(0.95, 1 - Math.abs(opt.moneyness)));
+      const moneyness = (underlying - opt.strike) / underlying;
+      delta = Math.max(0.05, Math.min(0.95, 1 - Math.abs(moneyness)));
       fallback++;
-      return { ...opt, delta: approx };
     }
-    return opt;
+
+    return { ...opt, delta };
   });
 
   debug([
@@ -104,109 +124,56 @@ function normalizeDeltas(options) {
 }
 
 // ------------------------------------------------------------
-// Select bull long legs
+// Select mid-delta long legs
 // ------------------------------------------------------------
 function selectBullLongLegs(calls) {
   const mids = calls.filter((c) => c.delta >= 0.25 && c.delta <= 0.35);
-
-  if (mids.length === 0) warn("No mid-delta calls found.");
-
-  debug([
-    "Stage: Bull Long-Leg Selection",
-    `Candidates: ${mids.length}`
-  ]);
-
   return mids;
 }
 
-// ------------------------------------------------------------
-// Select bear long legs
-// ------------------------------------------------------------
 function selectBearLongLegs(puts) {
   const mids = puts.filter((p) => Math.abs(p.delta) >= 0.25 && Math.abs(p.delta) <= 0.35);
-
-  if (mids.length === 0) warn("No mid-delta puts found.");
-
-  debug([
-    "Stage: Bear Long-Leg Selection",
-    `Candidates: ${mids.length}`
-  ]);
-
   return mids;
 }
 
 // ------------------------------------------------------------
-// Build bull spreads
+// Build bull and bear spreads
 // ------------------------------------------------------------
 function buildBullSpreads(longLegs, calls, widths) {
   const spreads = [];
-
   longLegs.forEach((long) => {
     widths.forEach((w) => {
       const short = calls.find((c) => c.strike === long.strike + w);
-      if (short) {
-        spreads.push({ type: "bull", long, short, width: w });
-      }
+      if (short) spreads.push({ type: "bull", long, short, width: w });
     });
   });
-
-  if (spreads.length === 0) warn("No bull spreads built.");
-
-  debug([
-    "Stage: Bull Spread Construction",
-    `Long legs: ${longLegs.length}`,
-    `Spreads built: ${spreads.length}`
-  ]);
-
   return spreads;
 }
 
-// ------------------------------------------------------------
-// Build bear spreads
-// ------------------------------------------------------------
 function buildBearSpreads(longLegs, puts, widths) {
   const spreads = [];
-
   longLegs.forEach((long) => {
     widths.forEach((w) => {
       const short = puts.find((p) => p.strike === long.strike - w);
-      if (short) {
-        spreads.push({ type: "bear", long, short, width: w });
-      }
+      if (short) spreads.push({ type: "bear", long, short, width: w });
     });
   });
-
-  if (spreads.length === 0) warn("No bear spreads built.");
-
-  debug([
-    "Stage: Bear Spread Construction",
-    `Long legs: ${longLegs.length}`,
-    `Spreads built: ${spreads.length}`
-  ]);
-
   return spreads;
 }
 
 // ------------------------------------------------------------
-// Main builder (NO FETCH INSIDE — FIXED)
+// Main builder
 // ------------------------------------------------------------
 async function buildSpreads(chain, symbol, expiration, widths) {
   if (!chain) return [];
 
-  const underlying = resolveUnderlyingPrice(chain);
+  const { underlying, options } = chain;
 
-  const calls = chain.options[0].calls.map((c) => ({
-    ...c,
-    moneyness: (underlying - c.strike) / underlying
-  }));
+  const calls = options.filter((o) => o.option_type === "call");
+  const puts = options.filter((o) => o.option_type === "put");
 
-  const puts = chain.options[0].puts.map((p) => ({
-    ...p,
-    moneyness: (p.strike - underlying) / underlying
-  }));
-
-  const normCalls = normalizeDeltas(calls);
-  const normPuts = normalizeDeltas(puts);
+  const normCalls = normalizeDeltas(calls, underlying);
+  const normPuts = normalizeDeltas(puts, underlying);
 
   const bullLongs = selectBullLongLegs(normCalls);
   const bearLongs = selectBearLongLegs(normPuts);
@@ -215,8 +182,6 @@ async function buildSpreads(chain, symbol, expiration, widths) {
   const bearSpreads = buildBearSpreads(bearLongs, normPuts, widths);
 
   const all = [...bullSpreads, ...bearSpreads];
-
-  if (all.length === 0) warn("All spreads filtered out.");
 
   debug([
     "Stage: Final Spread Count",
@@ -229,6 +194,8 @@ async function buildSpreads(chain, symbol, expiration, widths) {
 }
 
 module.exports = {
+  fetchExpirations,
+  filterExpirations,
   fetchOptionChain,
   buildSpreads
 };
