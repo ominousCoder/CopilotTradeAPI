@@ -1,151 +1,67 @@
-export default async function handler(req, res) {
-  const { symbol, expiration, long_strike, short_strike, type } = req.query;
+// api/spread-score.js
 
-  if (!symbol || !expiration || !long_strike || !short_strike || !type) {
-    return res.status(400).json({
-      error: "missing_parameters",
-      message: "symbol, expiration, long_strike, short_strike, and type are required."
-    });
-  }
+export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice }) {
+  const debit = longMid - shortMid;
+  const maxProfit = width - debit;
+  const rr = maxProfit / debit;
 
-  try {
-    // Fetch chain
-    const url = new URL("https://api.tradier.com/v1/markets/options/chains");
-    url.searchParams.set("symbol", symbol);
-    url.searchParams.set("expiration", expiration);
+  // -----------------------------
+  // BASE BUCKETS
+  // -----------------------------
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
-        Accept: "application/json"
-      }
-    });
+  // Debit bucket
+  let baseDebitBucket = 0;
+  const debitPct = debit / width;
+  if (debitPct <= 0.20) baseDebitBucket = 9;
+  else if (debitPct <= 0.40) baseDebitBucket = 7;
+  else if (debitPct <= 0.60) baseDebitBucket = 5;
+  else if (debitPct <= 0.80) baseDebitBucket = 3;
+  else baseDebitBucket = 1;
 
-    if (!response.ok) {
-      return res.status(502).json({
-        error: "provider_error",
-        message: "Tradier returned a non-200 response."
-      });
-    }
+  // RR bucket
+  let baseRRBucket = 0;
+  if (rr >= 4) baseRRBucket = 9;
+  else if (rr >= 3) baseRRBucket = 7;
+  else if (rr >= 2) baseRRBucket = 5;
+  else if (rr >= 1.5) baseRRBucket = 3;
+  else baseRRBucket = 1;
 
-    const data = await response.json();
-    const raw = data?.options?.option;
+  // Liquidity bucket
+  let baseLiqBucket = 0;
+  const liqRatio = bidAskSpread / midPrice;
+  if (liqRatio <= 0.03) baseLiqBucket = 9;
+  else if (liqRatio <= 0.06) baseLiqBucket = 7;
+  else if (liqRatio <= 0.10) baseLiqBucket = 5;
+  else if (liqRatio <= 0.15) baseLiqBucket = 3;
+  else baseLiqBucket = 1;
 
-    if (!raw) {
-      return res.status(404).json({
-        error: "not_found",
-        message: "No options returned for this chain."
-      });
-    }
+  // -----------------------------
+  // FRACTIONAL MICRO-SCORING
+  // -----------------------------
 
-    const options = Array.isArray(raw) ? raw : [raw];
+  const debitFraction = Math.max(0, Math.min((1 - debitPct) * 0.99, 0.99));
+  const rrFraction = Math.max(0, Math.min((rr / 10) * 0.99, 0.99));
+  const liqFraction = Math.max(0, Math.min((1 - liqRatio) * 0.99, 0.99));
 
-    // Extract legs
-    const longLeg = options.find(
-      o => o.strike == long_strike && o.option_type === type
-    );
-    const shortLeg = options.find(
-      o => o.strike == short_strike && o.option_type === type
-    );
+  // -----------------------------
+  // FINAL SCORES
+  // -----------------------------
 
-    if (!longLeg || !shortLeg) {
-      return res.status(404).json({
-        error: "legs_not_found",
-        message: "One or both legs were not found in the chain."
-      });
-    }
+  const debitScore = baseDebitBucket + debitFraction;
+  const rrScore = baseRRBucket + rrFraction;
+  const liquidityScore = baseLiqBucket + liqFraction;
 
-    // Validate bid/ask
-    if (
-      longLeg.bid == null || longLeg.ask == null ||
-      shortLeg.bid == null || shortLeg.ask == null
-    ) {
-      return res.status(400).json({
-        error: "invalid_market_data",
-        message: "Missing bid/ask for one or both legs."
-      });
-    }
+  const total_score = debitScore + rrScore + liquidityScore;
 
-    // Mid prices
-    const longMid = (longLeg.bid + longLeg.ask) / 2;
-    const shortMid = (shortLeg.bid + shortLeg.ask) / 2;
-
-    if (!isFinite(longMid) || !isFinite(shortMid)) {
-      return res.status(400).json({
-        error: "invalid_mid",
-        message: "Could not compute mid prices."
-      });
-    }
-
-    // Spread math
-    const debit = longMid - shortMid;
-    const width = Math.abs(shortLeg.strike - longLeg.strike);
-    const maxProfit = width - debit;
-
-    // Orientation
-    const isBull =
-      (type === "call" && Number(short_strike) > Number(long_strike)) ||
-      (type === "put" && Number(short_strike) < Number(long_strike));
-
-    const spreadType = isBull ? "bull" : "bear";
-
-    // Scoring
-    const debitScore =
-      debit <= width * 0.25 ? 9 :
-      debit <= width * 0.35 ? 7 :
-      debit <= width * 0.45 ? 5 :
-      debit <= width * 0.55 ? 3 : 1;
-
-    const riskReward = maxProfit / debit;
-    const rrScore =
-      riskReward >= 3 ? 9 :
-      riskReward >= 2 ? 7 :
-      riskReward >= 1.5 ? 5 :
-      riskReward >= 1.2 ? 3 : 1;
-
-    const liquidityScore =
-      longLeg.bid > 0 && shortLeg.bid > 0 ? 9 :
-      longLeg.ask - longLeg.bid < 0.1 && shortLeg.ask - shortLeg.bid < 0.1 ? 7 :
-      3;
-
-    const totalScore = debitScore + rrScore + liquidityScore;
-
-    // Safety rules
-    const isSafe =
-      debit > 0 &&
-      debit < width &&
-      longLeg.bid != null &&
-      shortLeg.bid != null;
-
-    return res.status(200).json({
-      symbol,
-      expiration,
-      long_strike: Number(long_strike),
-      short_strike: Number(short_strike),
-      type,
-      spreadType,
-      pricing: {
-        longMid,
-        shortMid,
-        debit,
-        width,
-        maxProfit
-      },
-      scores: {
-        debitScore,
-        rrScore,
-        liquidityScore,
-        total_score: totalScore
-      },
-      eligibility: {
-        is_safe: isSafe
-      }
-    });
-
-  } catch (err) {
-    return res.status(500).json({
-      error: "internal_error",
-      message: err.message
-    });
-  }
+  return {
+    debitScore: Number(debitScore.toFixed(4)),
+    rrScore: Number(rrScore.toFixed(4)),
+    liquidityScore: Number(liquidityScore.toFixed(4)),
+    total_score: Number(total_score.toFixed(4)),
+    debit,
+    maxProfit,
+    rr
+  };
 }
+
+export default scoreSpread;
