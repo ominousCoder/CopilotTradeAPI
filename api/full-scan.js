@@ -88,8 +88,7 @@ export default async function handler(req, res) {
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
     const top_spreads = allSpreads.slice(0, 5);
 
-    return res.status(200).json({
-    return res.status(200).json({
+return res.status(200).json({
       count: top_spreads.length,
       top_spreads
     });
