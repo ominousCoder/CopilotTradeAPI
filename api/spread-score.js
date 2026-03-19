@@ -2,7 +2,7 @@
 
 const MAX_DEBIT = 40;
 
-export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, delta }) {
+export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, delta, distancePct }) {
   const debit = longMid - shortMid;
   const maxProfit = width - debit;
   const rr = maxProfit / debit;
@@ -51,6 +51,16 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   else if (absDelta >= 0.15 && absDelta <= 0.50) baseDeltaBucket = 3;
   else baseDeltaBucket = 1;
 
+  // FIX 13: Distance from spot bucket
+  // Rewards strikes close to ATM for better fill quality
+  let baseDistanceBucket = 0;
+  const absDist = Math.abs(distancePct);
+  if (absDist <= 2) baseDistanceBucket = 9;
+  else if (absDist <= 3) baseDistanceBucket = 7;
+  else if (absDist <= 4) baseDistanceBucket = 5;
+  else if (absDist <= 5) baseDistanceBucket = 3;
+  else baseDistanceBucket = 1;
+
   // -----------------------------
   // FRACTIONAL MICRO-SCORING
   // -----------------------------
@@ -62,6 +72,9 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   const deltaDistance = Math.abs(absDelta - deltaCenter);
   const deltaFraction = Math.max(0, Math.min((1 - deltaDistance / 0.30) * 0.99, 0.99));
 
+  // FIX 13: Distance fraction — peaks at 0%, falls off as distance increases
+  const distanceFraction = Math.max(0, Math.min((1 - absDist / 5) * 0.99, 0.99));
+
   // -----------------------------
   // FINAL SCORES — capped at 9.99 per dimension
   // -----------------------------
@@ -69,15 +82,17 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   const rrScore = Math.min(baseRRBucket + rrFraction, 9.99);
   const liquidityScore = Math.min(baseLiqBucket + liqFraction, 9.99);
   const deltaScore = Math.min(baseDeltaBucket + deltaFraction, 9.99);
+  const distanceScore = Math.min(baseDistanceBucket + distanceFraction, 9.99);
 
-  // Max possible score is 39.96 (9.99 x 4)
-  const total_score = debitScore + rrScore + liquidityScore + deltaScore;
+  // Max possible score is 49.95 (9.99 x 5)
+  const total_score = debitScore + rrScore + liquidityScore + deltaScore + distanceScore;
 
   return {
     debitScore: Number(debitScore.toFixed(4)),
     rrScore: Number(rrScore.toFixed(4)),
     liquidityScore: Number(liquidityScore.toFixed(4)),
     deltaScore: Number(deltaScore.toFixed(4)),
+    distanceScore: Number(distanceScore.toFixed(4)),
     total_score: Number(total_score.toFixed(4)),
     debit,
     maxProfit,
