@@ -12,14 +12,12 @@ const MAX_DEBIT = 40;
 
 export default async function handler(req, res) {
   try {
-    // FIX 12: Added direction parameter
     const { symbols, direction } = req.query;
 
     if (!symbols) {
       return res.status(400).json({ error: "Missing symbols parameter" });
     }
 
-    // Validate direction if provided
     if (direction && !["bull", "bear"].includes(direction)) {
       return res.status(400).json({
         error: "Invalid direction parameter. Use 'bull' or 'bear'."
@@ -48,13 +46,19 @@ export default async function handler(req, res) {
 
           if (debit > MAX_DEBIT) continue;
 
+          // FIX 13: Calculate distance from spot
+          const underlying = chain.underlying;
+          const dollarDistance = Number((sp.long.strike - underlying).toFixed(2));
+          const distancePct = Number(((sp.long.strike - underlying) / underlying * 100).toFixed(2));
+
           const score = scoreSpread({
             longMid,
             shortMid,
             width: sp.width,
             bidAskSpread: (sp.long.ask - sp.long.bid) + (sp.short.ask - sp.short.bid),
             midPrice: longMid - shortMid,
-            delta: sp.long.delta
+            delta: sp.long.delta,
+            distancePct  // FIX 13: Pass distance to scorer
           });
 
           if (!score) continue;
@@ -66,6 +70,12 @@ export default async function handler(req, res) {
             short_strike: sp.short.strike,
             type: sp.type,
             spreadType: sp.type === "bull" ? "bull_call" : "bear_put",
+            // FIX 13: Add spot context to output
+            spot: {
+              underlying,
+              dollarDistance,
+              distancePct: `${distancePct}%`
+            },
             pricing: {
               longMid,
               shortMid,
@@ -84,6 +94,7 @@ export default async function handler(req, res) {
               rrScore: score.rrScore,
               liquidityScore: score.liquidityScore,
               deltaScore: score.deltaScore,
+              distanceScore: score.distanceScore,  // FIX 13
               total_score: score.total_score
             },
             eligibility: { is_safe: score.is_safe }
@@ -92,7 +103,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // FIX 12: Apply direction filter before sorting
     if (direction === "bear") {
       allSpreads = allSpreads.filter(s => s.type === "bear");
     } else if (direction === "bull") {
