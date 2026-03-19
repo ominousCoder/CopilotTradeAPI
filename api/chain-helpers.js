@@ -20,7 +20,7 @@ function warn(message) {
 // Fetch all expirations for a symbol
 // ------------------------------------------------------------
 async function fetchExpirations(symbol) {
-  const url = `${BASE}/markets/options/expirations?symbol=${symbol}&includeAllRoots=true&strikes=true`;
+  const url = `${BASE}/markets/options/expirations?symbol=${symbol}&includeAllRoots=true`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -31,6 +31,7 @@ async function fetchExpirations(symbol) {
   });
 
   const json = await res.json();
+  console.log("[DEBUG] Expirations raw response:", JSON.stringify(json));
   return json?.expirations?.date ?? [];
 }
 
