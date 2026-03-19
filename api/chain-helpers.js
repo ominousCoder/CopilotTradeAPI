@@ -63,39 +63,40 @@ function filterExpirations(expirations) {
 // ------------------------------------------------------------
 // Fetch option chain for a specific expiration
 // ------------------------------------------------------------
-// ------------------------------------------------------------
-// Fetch option chain for a specific expiration
-// ------------------------------------------------------------
 async function fetchOptionChain(symbol, expiration) {
-  // FIX 1: Added &greeks=true so Tradier returns Greeks on every contract
-  const url = `${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}&greeks=true`;
+  // Fetch underlying price and chain in parallel
+  const [quoteRes, chainRes] = await Promise.all([
+    fetch(`${BASE}/markets/quotes?symbols=${symbol}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+        Accept: "application/json"
+      }
+    }),
+    fetch(`${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}&greeks=true`, {
+      headers: {
+        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+        Accept: "application/json"
+      }
+    })
+  ]);
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${process.env.TRADIER_KEY}`,
-      Accept: "application/json"
-    }
-  });
+  const [quoteJson, chainJson] = await Promise.all([
+    quoteRes.json(),
+    chainRes.json()
+  ]);
 
-  const json = await res.json();
-  const options = json?.options?.option;
+  const options = chainJson?.options?.option;
 
   if (!options || options.length === 0) {
     warn(`No options returned for ${symbol} @ ${expiration}`);
     return null;
   }
 
-  // FIX 14: Multiple fallbacks for underlying price
-  const underlying =
-    json?.underlying?.last ??
-    json?.quotes?.quote?.last ??
-    options[0]?.underlying_price ??
-    null;
+  // FIX 14: Get underlying from quote endpoint
+  const quotes = quoteJson?.quotes?.quote;
+  const underlying = Array.isArray(quotes) ? quotes[0]?.last : quotes?.last ?? null;
 
-  // FIX 14: Log what we got so we can see the structure
-  console.log(`[DEBUG] ${symbol} underlying:`, underlying);
-  console.log(`[DEBUG] ${symbol} json keys:`, Object.keys(json));
+  console.log(`[DEBUG] ${symbol} underlying from quote:`, underlying);
 
   debug([
     "Stage: Chain Fetch",
@@ -107,7 +108,6 @@ async function fetchOptionChain(symbol, expiration) {
 
   return { underlying, options };
 }
-
 // ------------------------------------------------------------
 // Normalize deltas (fallback enabled)
 // ------------------------------------------------------------
