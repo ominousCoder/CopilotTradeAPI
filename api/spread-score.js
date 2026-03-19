@@ -1,13 +1,13 @@
 // api/spread-score.js
 
-const MAX_DEBIT = 40; // Hard ceiling — matches full-scan.js
+const MAX_DEBIT = 40;
 
 export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, delta }) {
   const debit = longMid - shortMid;
   const maxProfit = width - debit;
   const rr = maxProfit / debit;
 
-  // FIX 5: Hard safety gates — return null if spread fails basic rules
+  // Hard safety gates
   if (debit <= 0) return null;
   if (debit > MAX_DEBIT) return null;
   if (maxProfit <= 0) return null;
@@ -37,18 +37,18 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   // Liquidity bucket
   let baseLiqBucket = 0;
   const liqRatio = bidAskSpread / midPrice;
-  if (liqRatio <= 0.03) baseLiqBucket = 9;
-  else if (liqRatio <= 0.06) baseLiqBucket = 7;
-  else if (liqRatio <= 0.10) baseLiqBucket = 5;
-  else if (liqRatio <= 0.15) baseLiqBucket = 3;
+  if (liqRatio <= 0.05) baseLiqBucket = 9;
+  else if (liqRatio <= 0.10) baseLiqBucket = 7;
+  else if (liqRatio <= 0.15) baseLiqBucket = 5;
+  else if (liqRatio <= 0.25) baseLiqBucket = 3;
   else baseLiqBucket = 1;
 
-  // FIX 6: Delta alignment bucket
+  // Delta bucket
   let baseDeltaBucket = 0;
   const absDelta = Math.abs(delta);
-  if (absDelta >= 0.25 && absDelta <= 0.35) baseDeltaBucket = 9;
-  else if (absDelta >= 0.20 && absDelta <= 0.40) baseDeltaBucket = 6;
-  else if (absDelta >= 0.15 && absDelta <= 0.45) baseDeltaBucket = 3;
+  if (absDelta >= 0.25 && absDelta <= 0.40) baseDeltaBucket = 9;
+  else if (absDelta >= 0.20 && absDelta <= 0.45) baseDeltaBucket = 6;
+  else if (absDelta >= 0.15 && absDelta <= 0.50) baseDeltaBucket = 3;
   else baseDeltaBucket = 1;
 
   // -----------------------------
@@ -58,20 +58,19 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   const rrFraction = Math.max(0, Math.min((rr / 10) * 0.99, 0.99));
   const liqFraction = Math.max(0, Math.min((1 - liqRatio) * 0.99, 0.99));
 
-  // FIX 6: Delta fraction — peaks at 0.30, falls off symmetrically
   const deltaCenter = 0.30;
   const deltaDistance = Math.abs(absDelta - deltaCenter);
   const deltaFraction = Math.max(0, Math.min((1 - deltaDistance / 0.30) * 0.99, 0.99));
 
   // -----------------------------
-  // FINAL SCORES
+  // FINAL SCORES — capped at 9.99 per dimension
   // -----------------------------
-  const debitScore = baseDebitBucket + debitFraction;
-  const rrScore = baseRRBucket + rrFraction;
-  const liquidityScore = baseLiqBucket + liqFraction;
-  const deltaScore = baseDeltaBucket + deltaFraction;
+  const debitScore = Math.min(baseDebitBucket + debitFraction, 9.99);
+  const rrScore = Math.min(baseRRBucket + rrFraction, 9.99);
+  const liquidityScore = Math.min(baseLiqBucket + liqFraction, 9.99);
+  const deltaScore = Math.min(baseDeltaBucket + deltaFraction, 9.99);
 
-  // Max possible score is now 36 (9+9+9+9)
+  // Max possible score is 39.96 (9.99 x 4)
   const total_score = debitScore + rrScore + liquidityScore + deltaScore;
 
   return {
