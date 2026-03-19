@@ -6,17 +6,17 @@ import {
   buildSpreads
 } from "./chain-helpers";
 
+const MAX_DEBIT = 40; // FIX 3: Enforce $40 debit ceiling
+
 export default async function handler(req, res) {
   try {
     const { symbols } = req.query;
-
     if (!symbols) {
       return res.status(400).json({ error: "Missing symbols parameter" });
     }
 
     const tickers = symbols.split(",");
     let allSpreads = [];
-
     const allowedWidths = [0.5, 1, 2, 2.5, 5];
 
     for (const symbol of tickers) {
@@ -33,14 +33,23 @@ export default async function handler(req, res) {
         for (const sp of spreads) {
           const longMid = (sp.long.bid + sp.long.ask) / 2;
           const shortMid = (sp.short.bid + sp.short.ask) / 2;
+          const debit = longMid - shortMid;
 
+          // FIX 3: Skip spreads that exceed the $40 debit ceiling
+          if (debit > MAX_DEBIT) continue;
+
+          // FIX 4: Pass long leg delta to scoreSpread
           const score = scoreSpread({
             longMid,
             shortMid,
             width: sp.width,
             bidAskSpread: (sp.long.ask - sp.long.bid) + (sp.short.ask - sp.short.bid),
-            midPrice: longMid - shortMid
+            midPrice: longMid - shortMid,
+            delta: sp.long.delta
           });
+
+          // Skip ineligible spreads returned by scorer
+          if (!score) continue;
 
           allSpreads.push({
             symbol,
@@ -56,29 +65,28 @@ export default async function handler(req, res) {
               width: sp.width,
               maxProfit: score.maxProfit
             },
+            greeks: {
+              // FIX 4: Include Greeks in output for transparency
+              delta: sp.long.delta,
+              gamma: sp.long.gamma,
+              theta: sp.long.theta,
+              vega: sp.long.vega
+            },
             scores: {
               debitScore: score.debitScore,
               rrScore: score.rrScore,
               liquidityScore: score.liquidityScore,
+              deltaScore: score.deltaScore,
               total_score: score.total_score
             },
-            eligibility: { is_safe: true }
+            eligibility: { is_safe: score.is_safe }
           });
         }
       }
     }
 
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
-
     const top_spreads = allSpreads.slice(0, 5);
 
     return res.status(200).json({
-      count: top_spreads.length,
-      top_spreads
-    });
-
-  } catch (err) {
-    console.error("Full scan error:", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-}
+      count: top_spread
