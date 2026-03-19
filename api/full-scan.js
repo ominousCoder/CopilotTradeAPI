@@ -1,3 +1,5 @@
+// api/full-scan.js
+
 import scoreSpread from "./spread-score.js";
 import {
   fetchExpirations,
@@ -6,13 +8,22 @@ import {
   buildSpreads
 } from "./chain-helpers.js";
 
-const MAX_DEBIT = 40; // FIX 3: Enforce $40 debit ceiling
+const MAX_DEBIT = 40;
 
 export default async function handler(req, res) {
   try {
-    const { symbols } = req.query;
+    // FIX 12: Added direction parameter
+    const { symbols, direction } = req.query;
+
     if (!symbols) {
       return res.status(400).json({ error: "Missing symbols parameter" });
+    }
+
+    // Validate direction if provided
+    if (direction && !["bull", "bear"].includes(direction)) {
+      return res.status(400).json({
+        error: "Invalid direction parameter. Use 'bull' or 'bear'."
+      });
     }
 
     const tickers = symbols.split(",");
@@ -35,10 +46,8 @@ export default async function handler(req, res) {
           const shortMid = (sp.short.bid + sp.short.ask) / 2;
           const debit = longMid - shortMid;
 
-          // FIX 3: Skip spreads that exceed the $40 debit ceiling
           if (debit > MAX_DEBIT) continue;
 
-          // FIX 4: Pass long leg delta to scoreSpread
           const score = scoreSpread({
             longMid,
             shortMid,
@@ -48,7 +57,6 @@ export default async function handler(req, res) {
             delta: sp.long.delta
           });
 
-          // Skip ineligible spreads returned by scorer
           if (!score) continue;
 
           allSpreads.push({
@@ -66,7 +74,6 @@ export default async function handler(req, res) {
               maxProfit: score.maxProfit
             },
             greeks: {
-              // FIX 4: Include Greeks in output for transparency
               delta: sp.long.delta,
               gamma: sp.long.gamma,
               theta: sp.long.theta,
@@ -85,11 +92,19 @@ export default async function handler(req, res) {
       }
     }
 
+    // FIX 12: Apply direction filter before sorting
+    if (direction === "bear") {
+      allSpreads = allSpreads.filter(s => s.type === "bear");
+    } else if (direction === "bull") {
+      allSpreads = allSpreads.filter(s => s.type === "bull");
+    }
+
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
     const top_spreads = allSpreads.slice(0, 5);
 
-return res.status(200).json({
+    return res.status(200).json({
       count: top_spreads.length,
+      direction: direction ?? "any",
       top_spreads
     });
 
