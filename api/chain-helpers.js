@@ -63,6 +63,9 @@ function filterExpirations(expirations) {
 // ------------------------------------------------------------
 // Fetch option chain for a specific expiration
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Fetch option chain for a specific expiration
+// ------------------------------------------------------------
 async function fetchOptionChain(symbol, expiration) {
   // FIX 1: Added &greeks=true so Tradier returns Greeks on every contract
   const url = `${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}&greeks=true`;
@@ -83,7 +86,16 @@ async function fetchOptionChain(symbol, expiration) {
     return null;
   }
 
-  const underlying = json?.underlying?.last;
+  // FIX 14: Multiple fallbacks for underlying price
+  const underlying =
+    json?.underlying?.last ??
+    json?.quotes?.quote?.last ??
+    options[0]?.underlying_price ??
+    null;
+
+  // FIX 14: Log what we got so we can see the structure
+  console.log(`[DEBUG] ${symbol} underlying:`, underlying);
+  console.log(`[DEBUG] ${symbol} json keys:`, Object.keys(json));
 
   debug([
     "Stage: Chain Fetch",
