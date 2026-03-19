@@ -1,5 +1,10 @@
+// api/utils/pickExpiration.js
+
+const BASE = process.env.TRADIER_BASE_URL; // FIX 8: ENV-driven base URL
+
 export async function pickExpiration(symbol) {
-  const url = new URL("https://api.tradier.com/v1/markets/options/expirations");
+  // FIX 8: Use ENV-driven base URL instead of hardcoded Tradier URL
+  const url = new URL(`${BASE}/markets/options/expirations`);
   url.searchParams.set("symbol", symbol);
   url.searchParams.set("includeAllRoots", "true");
   url.searchParams.set("strikes", "false");
@@ -20,7 +25,7 @@ export async function pickExpiration(symbol) {
   const today = new Date();
   const minDays = 14;
 
-  // Monthlies: 3rd Friday
+  // Monthlies: 3rd Friday (day 15–21)
   const monthlies = expirations.filter(dateStr => {
     const d = new Date(dateStr);
     const day = d.getDate();
@@ -29,6 +34,9 @@ export async function pickExpiration(symbol) {
   });
 
   if (!monthlies.length) return null;
+
+  // FIX 9: Sort monthlies ascending to ensure nearest eligible is first
+  monthlies.sort((a, b) => new Date(a) - new Date(b));
 
   const eligible = monthlies.filter(dateStr => {
     const d = new Date(dateStr);
@@ -41,3 +49,5 @@ export async function pickExpiration(symbol) {
   // Fallback: nearest monthly even if < minDays
   return monthlies[0];
 }
+
+export default pickExpiration;
