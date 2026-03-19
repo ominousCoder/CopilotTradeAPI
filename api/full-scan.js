@@ -1,10 +1,10 @@
-import scoreSpread from "./spread-score";
+import scoreSpread from "./spread-score.js";
 import {
   fetchExpirations,
   filterExpirations,
   fetchOptionChain,
   buildSpreads
-} from "./chain-helpers";
+} from "./chain-helpers.js";
 
 const MAX_DEBIT = 40; // FIX 3: Enforce $40 debit ceiling
 
