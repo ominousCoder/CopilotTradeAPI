@@ -11,7 +11,7 @@ export function scoreSpread({ longMid, shortMid, width, bidAskSpread, midPrice, 
   if (debit <= 0) return null;
   if (debit > MAX_DEBIT) return null;
   if (maxProfit <= 0) return null;
-  if (!delta || delta <= 0) return null;
+  if (!delta || delta === 0) return null;
 
   // -----------------------------
   // BASE BUCKETS
