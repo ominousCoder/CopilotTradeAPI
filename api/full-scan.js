@@ -9,6 +9,8 @@ import {
 } from "./chain-helpers.js";
 
 const MAX_DEBIT = 40;
+const MAX_PER_SYMBOL = 3;  // FIX 15: Cap per symbol
+const MAX_RESULTS = 15;    // FIX 15: Return top 15
 
 export default async function handler(req, res) {
   try {
@@ -46,7 +48,6 @@ export default async function handler(req, res) {
 
           if (debit > MAX_DEBIT) continue;
 
-          // FIX 13: Calculate distance from spot
           const underlying = chain.underlying;
           const dollarDistance = Number((sp.long.strike - underlying).toFixed(2));
           const distancePct = Number(((sp.long.strike - underlying) / underlying * 100).toFixed(2));
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
             bidAskSpread: (sp.long.ask - sp.long.bid) + (sp.short.ask - sp.short.bid),
             midPrice: longMid - shortMid,
             delta: sp.long.delta,
-            distancePct  // FIX 13: Pass distance to scorer
+            distancePct
           });
 
           if (!score) continue;
@@ -70,7 +71,6 @@ export default async function handler(req, res) {
             short_strike: sp.short.strike,
             type: sp.type,
             spreadType: sp.type === "bull" ? "bull_call" : "bear_put",
-            // FIX 13: Add spot context to output
             spot: {
               underlying,
               dollarDistance,
@@ -94,7 +94,7 @@ export default async function handler(req, res) {
               rrScore: score.rrScore,
               liquidityScore: score.liquidityScore,
               deltaScore: score.deltaScore,
-              distanceScore: score.distanceScore,  // FIX 13
+              distanceScore: score.distanceScore,
               total_score: score.total_score
             },
             eligibility: { is_safe: score.is_safe }
@@ -103,18 +103,32 @@ export default async function handler(req, res) {
       }
     }
 
+    // Apply direction filter
     if (direction === "bear") {
       allSpreads = allSpreads.filter(s => s.type === "bear");
     } else if (direction === "bull") {
       allSpreads = allSpreads.filter(s => s.type === "bull");
     }
 
+    // Sort by score
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
-    const top_spreads = allSpreads.slice(0, 5);
+
+    // FIX 15: Apply per-symbol cap and return top 15
+    const seen = {};
+    const top_spreads = [];
+
+    for (const spread of allSpreads) {
+      seen[spread.symbol] = (seen[spread.symbol] || 0) + 1;
+      if (seen[spread.symbol] <= MAX_PER_SYMBOL) {
+        top_spreads.push(spread);
+      }
+      if (top_spreads.length >= MAX_RESULTS) break;
+    }
 
     return res.status(200).json({
       count: top_spreads.length,
       direction: direction ?? "any",
+      max_per_symbol: MAX_PER_SYMBOL,
       top_spreads
     });
 
