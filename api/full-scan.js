@@ -89,4 +89,13 @@ export default async function handler(req, res) {
     const top_spreads = allSpreads.slice(0, 5);
 
     return res.status(200).json({
-      count: top_spread
+    return res.status(200).json({
+      count: top_spreads.length,
+      top_spreads
+    });
+
+  } catch (err) {
+    console.error("Full scan error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
