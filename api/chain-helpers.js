@@ -3,7 +3,7 @@
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
-const BASE = process.env.TRADIER_BASE_URL;   // <— dynamic base URL
+const BASE = process.env.TRADIER_BASE_URL;
 
 function debug(lines) {
   if (!DEBUG) return;
@@ -63,7 +63,8 @@ function filterExpirations(expirations) {
 // Fetch option chain for a specific expiration
 // ------------------------------------------------------------
 async function fetchOptionChain(symbol, expiration) {
-  const url = `${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}`;
+  // FIX 1: Added &greeks=true so Tradier returns Greeks on every contract
+  const url = `${BASE}/markets/options/chains?symbol=${symbol}&expiration=${expiration}&greeks=true`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -192,7 +193,8 @@ async function buildSpreads(chain, symbol, expiration, widths) {
   return all;
 }
 
-module.exports = {
+// FIX 2: Changed module.exports to ES module exports for Vercel compatibility
+export {
   fetchExpirations,
   filterExpirations,
   fetchOptionChain,
