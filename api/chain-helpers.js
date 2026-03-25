@@ -38,6 +38,9 @@ async function fetchExpirations(symbol) {
 // ------------------------------------------------------------
 // Filter expirations to 7–45 DTE and take first 10
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Filter expirations to 7–45 DTE and take first 10
+// ------------------------------------------------------------
 function filterExpirations(expirations) {
   const today = new Date();
 
@@ -59,6 +62,7 @@ function filterExpirations(expirations) {
 
   return filtered.map((x) => x.exp);
 }
+
 
 // ------------------------------------------------------------
 // Fetch option chain for a specific expiration
