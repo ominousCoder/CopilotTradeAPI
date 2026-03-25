@@ -50,7 +50,7 @@ function filterExpirations(expirations) {
       const dte = Math.round((d - today) / 86400000);
       return { exp, dte };
     })
-    .filter((x) => x.dte >= 7 && x.dte <= 45)
+    .filter((x) => x.dte >= 14 && x.dte <= 45)
     .sort((a, b) => a.dte - b.dte)
     .slice(0, 10);
 
