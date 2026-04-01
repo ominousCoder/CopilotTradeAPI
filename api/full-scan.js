@@ -10,7 +10,7 @@ import {
 import { fetchADX } from "./adx-helpers.js";
 
 const MAX_DEBIT = 40;
-const MAX_DISTANCE_PCT = 2;  // max % distance from spot — strikes beyond this are too far OTM
+const MAX_DISTANCE_PCT = 3;  // max % distance from spot — strikes beyond this are too far OTM
 const MAX_PER_SYMBOL = 3;
 const MAX_RESULTS = 15;
 
