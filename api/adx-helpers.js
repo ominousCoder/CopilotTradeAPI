@@ -16,6 +16,10 @@ const BASE = process.env.TRADIER_BASE_URL;
 const PERIOD = 14;
 const CANDLES_NEEDED = PERIOD * 2 + 2; // warmup buffer
 
+// Filter thresholds
+export const ADX_MIN = 35;       // below this = not trending strongly enough
+export const DI_GAP_MIN = 10;    // +DI and -DI must be at least this far apart
+
 // ------------------------------------------------------------
 // Fetch daily OHLC candles from Tradier
 // ------------------------------------------------------------
@@ -154,7 +158,13 @@ export async function fetchADX(symbol) {
   try {
     const candles = await fetchCandles(symbol);
     if (!candles) return null;
-    return calculateADX(candles);
+    const result = calculateADX(candles);
+    if (!result) return null;
+
+    const diGap = Number(Math.abs(result.plusDI - result.minusDI).toFixed(2));
+    const passesFilter = result.adx >= ADX_MIN && diGap >= DI_GAP_MIN;
+
+    return { ...result, diGap, passesFilter };
   } catch (err) {
     console.error(`[adx-helpers] Error for ${symbol}:`, err.message);
     return null;
