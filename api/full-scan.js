@@ -35,8 +35,8 @@ export default async function handler(req, res) {
       // ADX chop filter — skip ticker if not trending
       const adxResult = await fetchADX(symbol);
 
-      if (!adxResult || adxResult.adx < 25) {
-        console.log(`[scan] ${symbol} skipped — ADX ${adxResult?.adx ?? "null"} (choppy)`);
+      if (!adxResult || !adxResult.passesFilter) {
+        console.log(`[scan] ${symbol} skipped — ADX ${adxResult?.adx ?? "null"}, gap ${adxResult?.diGap ?? "null"}`);
         continue;
       }
 
@@ -120,7 +120,8 @@ export default async function handler(req, res) {
             adx: {
               adx: adxResult.adx,
               plusDI: adxResult.plusDI,
-              minusDI: adxResult.minusDI
+              minusDI: adxResult.minusDI,
+              diGap: adxResult.diGap
             },
             eligibility: { is_safe: score.is_safe }
           });
