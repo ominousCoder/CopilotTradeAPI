@@ -10,6 +10,7 @@ import {
 import { fetchADX } from "./adx-helpers.js";
 
 const MAX_DEBIT = 40;
+const MAX_DISTANCE_PCT = 4;  // max % distance from spot — strikes beyond this are too far OTM
 const MAX_PER_SYMBOL = 3;
 const MAX_RESULTS = 15;
 
@@ -71,6 +72,9 @@ export default async function handler(req, res) {
           const underlying = chain.underlying;
           const dollarDistance = Number((sp.long.strike - underlying).toFixed(2));
           const distancePct = Number(((sp.long.strike - underlying) / underlying * 100).toFixed(2));
+
+          // Hard distance filter — skip strikes too far from spot
+          if (Math.abs(distancePct) > MAX_DISTANCE_PCT) continue;
 
           const score = scoreSpread({
             longMid,
@@ -162,6 +166,7 @@ export default async function handler(req, res) {
       count: top_spreads.length,
       direction: direction ?? "any",
       max_per_symbol: MAX_PER_SYMBOL,
+      max_distance_pct: MAX_DISTANCE_PCT,
       top_spreads
     });
 
