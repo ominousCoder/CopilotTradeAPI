@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     const allowedWidths = [0.5, 1, 2, 2.5, 5];
 
     for (const symbol of tickers) {
-      // ADX chop filter — skip ticker if not trending
+      // ADX chop filter — skip ticker if not trending strongly enough
       const adxResult = await fetchADX(symbol);
 
       if (!adxResult || !adxResult.passesFilter) {
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Directional filter — only trade with the trend
+      // Directional filter — only trade with the trend when direction is specified
       if (direction === "bear" && adxResult.minusDI <= adxResult.plusDI) {
         console.log(`[scan] ${symbol} skipped — bear requested but +DI(${adxResult.plusDI}) > -DI(${adxResult.minusDI})`);
         continue;
@@ -83,6 +83,13 @@ export default async function handler(req, res) {
           });
 
           if (!score) continue;
+
+          // Auto-align spread direction with DI when no direction specified
+          if (!direction) {
+            const bearAligned = sp.type === "bear" && adxResult.minusDI > adxResult.plusDI;
+            const bullAligned = sp.type === "bull" && adxResult.plusDI > adxResult.minusDI;
+            if (!bearAligned && !bullAligned) continue;
+          }
 
           allSpreads.push({
             symbol,
@@ -129,7 +136,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Apply direction filter
+    // Apply explicit direction filter
     if (direction === "bear") {
       allSpreads = allSpreads.filter(s => s.type === "bear");
     } else if (direction === "bull") {
