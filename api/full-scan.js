@@ -7,10 +7,11 @@ import {
   fetchOptionChain,
   buildSpreads
 } from "./chain-helpers.js";
+import { fetchADX } from "./adx-helpers.js";
 
 const MAX_DEBIT = 40;
-const MAX_PER_SYMBOL = 3;  // FIX 15: Cap per symbol
-const MAX_RESULTS = 15;    // FIX 15: Return top 15
+const MAX_PER_SYMBOL = 3;
+const MAX_RESULTS = 15;
 
 export default async function handler(req, res) {
   try {
@@ -31,6 +32,25 @@ export default async function handler(req, res) {
     const allowedWidths = [0.5, 1, 2, 2.5, 5];
 
     for (const symbol of tickers) {
+      // ADX chop filter — skip ticker if not trending
+      const adxResult = await fetchADX(symbol);
+
+      if (!adxResult || adxResult.adx < 25) {
+        console.log(`[scan] ${symbol} skipped — ADX ${adxResult?.adx ?? "null"} (choppy)`);
+        continue;
+      }
+
+      // Directional filter — only trade with the trend
+      if (direction === "bear" && adxResult.minusDI <= adxResult.plusDI) {
+        console.log(`[scan] ${symbol} skipped — bear requested but +DI(${adxResult.plusDI}) > -DI(${adxResult.minusDI})`);
+        continue;
+      }
+
+      if (direction === "bull" && adxResult.plusDI <= adxResult.minusDI) {
+        console.log(`[scan] ${symbol} skipped — bull requested but -DI(${adxResult.minusDI}) > +DI(${adxResult.plusDI})`);
+        continue;
+      }
+
       const allExps = await fetchExpirations(symbol);
       const expirations = filterExpirations(allExps);
 
@@ -97,6 +117,11 @@ export default async function handler(req, res) {
               distanceScore: score.distanceScore,
               total_score: score.total_score
             },
+            adx: {
+              adx: adxResult.adx,
+              plusDI: adxResult.plusDI,
+              minusDI: adxResult.minusDI
+            },
             eligibility: { is_safe: score.is_safe }
           });
         }
@@ -113,7 +138,7 @@ export default async function handler(req, res) {
     // Sort by score
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
 
-    // FIX 15: Apply per-symbol cap and return top 15
+    // Apply per-symbol cap and return top 15
     const seen = {};
     const top_spreads = [];
 
