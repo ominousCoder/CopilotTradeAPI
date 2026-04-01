@@ -57,11 +57,11 @@ async function fetchCandles(symbol) {
 // ------------------------------------------------------------
 function wilderSmooth(values, period) {
   const result = new Array(values.length).fill(null);
-  // First value: simple sum
+  // Seed: simple AVERAGE of first `period` values (NOT sum)
   let sum = 0;
   for (let i = 0; i < period; i++) sum += values[i];
-  result[period - 1] = sum;
-  // Subsequent: Wilder's method
+  result[period - 1] = sum / period;
+  // Subsequent: Wilder's smoothing formula
   for (let i = period; i < values.length; i++) {
     result[i] = result[i - 1] - result[i - 1] / period + values[i];
   }
@@ -137,10 +137,13 @@ function calculateADX(candles) {
 
   if (adxValue === null) return null;
 
+  // Clamp to valid range as a safety net
+  const adxClamped = Math.min(100, Math.max(0, adxValue));
+
   return {
-    adx:      Number(adxValue.toFixed(2)),
-    plusDI:   Number((plusDIFinal ?? 0).toFixed(2)),
-    minusDI:  Number((minusDIFinal ?? 0).toFixed(2))
+    adx:     Number(adxClamped.toFixed(2)),
+    plusDI:  Number((plusDIFinal ?? 0).toFixed(2)),
+    minusDI: Number((minusDIFinal ?? 0).toFixed(2))
   };
 }
 
@@ -156,4 +159,4 @@ export async function fetchADX(symbol) {
     console.error(`[adx-helpers] Error for ${symbol}:`, err.message);
     return null;
   }
-                     }
+}
