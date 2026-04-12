@@ -17,8 +17,8 @@ const PERIOD = 14;
 const CANDLES_NEEDED = PERIOD * 2 + 2; // warmup buffer
 
 // Filter thresholds
-export const ADX_MIN = 35;       // below this = not trending strongly enough
-export const DI_GAP_MIN = 10;    // +DI and -DI must be at least this far apart
+export const ADX_MIN = 30;       // below this = not trending strongly enough
+export const DI_GAP_MIN = 8;    // +DI and -DI must be at least this far apart
 
 // ------------------------------------------------------------
 // Fetch daily OHLC candles from Tradier
