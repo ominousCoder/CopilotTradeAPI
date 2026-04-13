@@ -1,4 +1,6 @@
 // api/full-scan.js
+// Standard protocol scan — all widths including $5, RSI scoring included
+// ADX minimum: 30, DI gap minimum: 8 (set in adx-helpers.js)
 
 import scoreSpread from "./spread-score.js";
 import {
@@ -9,11 +11,82 @@ import {
 } from "./chain-helpers.js";
 import { fetchADX } from "./adx-helpers.js";
 
-const MAX_DEBIT = 40;
-const MAX_DISTANCE_PCT = 3;  // max % distance from spot — strikes beyond this are too far OTM
+const MAX_DEBIT = 1.50;
+const MAX_DISTANCE_PCT = 3;
 const MAX_PER_SYMBOL = 3;
 const MAX_RESULTS = 15;
 
+// ------------------------------------------------------------
+// RSI helpers
+// ------------------------------------------------------------
+async function fetchRSI(symbol) {
+  try {
+    const BASE = process.env.TRADIER_BASE_URL;
+    const url = `${BASE}/markets/history?symbol=${symbol}&interval=daily&start=${getPastDate(30)}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
+        Accept: "application/json"
+      }
+    });
+    const json = await res.json();
+    const history = json?.history?.day;
+    if (!history || history.length < 15) return null;
+    const closes = history.map(d => d.close);
+    return calculateRSI(closes, 14);
+  } catch (e) {
+    console.log(`[full-scan] RSI fetch failed for ${symbol}:`, e.message);
+    return null;
+  }
+}
+
+function getPastDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split("T")[0];
+}
+
+function calculateRSI(closes, period = 14) {
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff >= 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return Math.round(100 - (100 / (1 + rs)));
+}
+
+function scoreRSI(rsi, type) {
+  if (rsi === null) return 5;
+  if (type === "bear") {
+    if (rsi >= 70) return 10;
+    if (rsi >= 60) return 8;
+    if (rsi >= 50) return 5;
+    return 2;
+  } else {
+    if (rsi <= 30) return 10;
+    if (rsi <= 40) return 8;
+    if (rsi <= 50) return 5;
+    return 2;
+  }
+}
+
+// ------------------------------------------------------------
+// Main handler
+// ------------------------------------------------------------
 export default async function handler(req, res) {
   try {
     const { symbols, direction } = req.query;
@@ -33,7 +106,6 @@ export default async function handler(req, res) {
     const allowedWidths = [0.5, 1, 2, 2.5, 5];
 
     for (const symbol of tickers) {
-      // ADX chop filter — skip ticker if not trending strongly enough
       const adxResult = await fetchADX(symbol);
 
       if (!adxResult || !adxResult.passesFilter) {
@@ -41,7 +113,6 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Directional filter — only trade with the trend when direction is specified
       if (direction === "bear" && adxResult.minusDI <= adxResult.plusDI) {
         console.log(`[scan] ${symbol} skipped — bear requested but +DI(${adxResult.plusDI}) > -DI(${adxResult.minusDI})`);
         continue;
@@ -52,6 +123,7 @@ export default async function handler(req, res) {
         continue;
       }
 
+      const rsi = await fetchRSI(symbol);
       const allExps = await fetchExpirations(symbol);
       const expirations = filterExpirations(allExps);
 
@@ -73,7 +145,6 @@ export default async function handler(req, res) {
           const dollarDistance = Number((sp.long.strike - underlying).toFixed(2));
           const distancePct = Number(((sp.long.strike - underlying) / underlying * 100).toFixed(2));
 
-          // Hard distance filter — skip strikes too far from spot
           if (Math.abs(distancePct) > MAX_DISTANCE_PCT) continue;
 
           const score = scoreSpread({
@@ -88,12 +159,14 @@ export default async function handler(req, res) {
 
           if (!score) continue;
 
-          // Auto-align spread direction with DI when no direction specified
           if (!direction) {
             const bearAligned = sp.type === "bear" && adxResult.minusDI > adxResult.plusDI;
             const bullAligned = sp.type === "bull" && adxResult.plusDI > adxResult.minusDI;
             if (!bearAligned && !bullAligned) continue;
           }
+
+          const rsiScore = scoreRSI(rsi, sp.type);
+          const total_score = score.total_score + rsiScore;
 
           allSpreads.push({
             symbol,
@@ -126,7 +199,9 @@ export default async function handler(req, res) {
               liquidityScore: score.liquidityScore,
               deltaScore: score.deltaScore,
               distanceScore: score.distanceScore,
-              total_score: score.total_score
+              rsiScore,
+              rsi,
+              total_score
             },
             adx: {
               adx: adxResult.adx,
@@ -140,25 +215,17 @@ export default async function handler(req, res) {
       }
     }
 
-    // Apply explicit direction filter
-    if (direction === "bear") {
-      allSpreads = allSpreads.filter(s => s.type === "bear");
-    } else if (direction === "bull") {
-      allSpreads = allSpreads.filter(s => s.type === "bull");
-    }
+    if (direction === "bear") allSpreads = allSpreads.filter(s => s.type === "bear");
+    else if (direction === "bull") allSpreads = allSpreads.filter(s => s.type === "bull");
 
-    // Sort by score
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
 
-    // Apply per-symbol cap and return top 15
     const seen = {};
     const top_spreads = [];
 
     for (const spread of allSpreads) {
       seen[spread.symbol] = (seen[spread.symbol] || 0) + 1;
-      if (seen[spread.symbol] <= MAX_PER_SYMBOL) {
-        top_spreads.push(spread);
-      }
+      if (seen[spread.symbol] <= MAX_PER_SYMBOL) top_spreads.push(spread);
       if (top_spreads.length >= MAX_RESULTS) break;
     }
 
