@@ -20,6 +20,8 @@ const SPREAD_WIDTH = 5;      // Fixed $5 wide for current account size
 const TARGET_DTE_MIN = 14;   // Widened from 18 to catch more expirations
 const TARGET_DTE_MAX = 35;   // Widened from 28
 const CLOSE_DTE = 14;        // Auto-exit — never hold past this
+const MIN_HOLD_DAYS = 5;     // Minimum days between entry DTE and close DTE
+const MAX_BID_ASK_QUALITY = 0.40; // Hard liquidity filter — above this, slippage kills edge
 
 // ------------------------------------------------------------
 // Extract IV from a put option
@@ -196,10 +198,16 @@ async function processSymbol(symbol) {
 
         if (netCredit < MIN_NET_CREDIT) continue;
 
+        // Liquidity hard filter — wide bid/ask kills realized credit
+        const bidAskQuality = ((shortPut.ask - shortPut.bid) + (longPut.ask - longPut.bid)) / 2;
+        if (bidAskQuality > MAX_BID_ASK_QUALITY) continue;
+
+        // Minimum hold period — entry DTE must be at least MIN_HOLD_DAYS above close DTE
+        if (dte - CLOSE_DTE < MIN_HOLD_DAYS) continue;
+
         const collateral = (SPREAD_WIDTH - netCredit) * 100;
         const distanceFromSpot = underlying - shortPut.strike;
         const shortStrikePct = (distanceFromSpot / oneSD) * 100;
-        const bidAskQuality = ((shortPut.ask - shortPut.bid) + (longPut.ask - longPut.bid)) / 2;
         const totalScore = scoreCreditSpread({ netCredit, iv, rsi, shortStrikePct, bidAskQuality });
         const ev = calcEV(netCredit);
 
