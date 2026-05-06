@@ -195,10 +195,12 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Fetch expirations and filter to target DTE window
+      // Fetch expirations — filterExpirations already handles 14–45 DTE
+      // We then narrow to our target window from the filtered list
       const allExps = await fetchExpirations(symbol);
-      const expirations = filterExpirations(allExps).filter(exp => {
-        const dte = Math.round((new Date(exp) - new Date()) / (1000 * 60 * 60 * 24));
+      const filteredExps = filterExpirations(allExps);
+      const expirations = filteredExps.filter(exp => {
+        const dte = Math.round((new Date(exp + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24));
         return dte >= TARGET_DTE_MIN && dte <= TARGET_DTE_MAX;
       });
 
@@ -216,7 +218,8 @@ export default async function handler(req, res) {
 
         // Pull IV from chain — use put side IV at ATM strike
         // Tradier returns iv on individual options — we average near-ATM puts
-        const puts = chain.options?.option?.filter(o => o.option_type === "put") || [];
+        // chain-helpers returns { underlying, options } where options is already parsed array
+        const puts = chain.options?.filter(o => o.option_type === "put") || [];
         if (puts.length === 0) continue;
 
         // Find ATM put — closest strike to underlying
