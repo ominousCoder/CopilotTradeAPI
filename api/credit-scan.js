@@ -1,95 +1,57 @@
 // api/credit-scan.js
 // Credit spread scanner — put credit spreads only
-// Filters on IV, 1 SD strike placement, net credit, RSI 40–70
-// No ADX requirement — credit spreads work in neutral and trending markets
-// Symbols processed in parallel to avoid Vercel 10s timeout
+// Fully independent from chain-helpers — owns all spread logic
+// Imports shared fetch utilities from market-helpers.js
+// Symbols and chains processed in parallel to avoid Vercel timeout
 
-import {
-  fetchExpirations,
-  filterExpirations,
-  fetchOptionChain
-} from "./chain-helpers.js";
+import { fetchExpirations, filterExpirations, fetchOptionChain, fetchRSI } from "./market-helpers.js";
 
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
-const MIN_IV = 28;           // Minimum IV% to generate viable premium
-const MAX_IV = 60;           // Above this — binary event risk, avoid
+const MIN_IV = 28;           // Minimum IV% — floor for viable premium
+const MAX_IV = 60;           // Maximum IV% — above this suggests binary event risk
 const MIN_NET_CREDIT = 0.40; // Minimum net credit after commissions
-const MIN_RSI = 40;          // Floor — below this, downtrend too risky for short puts
-const MAX_RSI = 70;          // Ceiling — overbought, reversal risk
+const MIN_RSI = 40;          // Below this — downtrend, short puts too risky
+const MAX_RSI = 75;          // Above this — overbought, reversal risk
 const MAX_PER_SYMBOL = 3;
 const MAX_RESULTS = 15;
-const SPREAD_WIDTH = 5;      // Fixed $5 wide for now
-const TARGET_DTE_MIN = 18;   // Open at 20–25 DTE
-const TARGET_DTE_MAX = 28;
-const CLOSE_DTE = 14;        // Auto-exit rule
+const SPREAD_WIDTH = 5;      // Fixed $5 wide for current account size
+const TARGET_DTE_MIN = 14;   // Widened from 18 to catch more expirations
+const TARGET_DTE_MAX = 35;   // Widened from 28
+const CLOSE_DTE = 14;        // Auto-exit — never hold past this
 
 // ------------------------------------------------------------
-// RSI helpers
+// Extract IV from a put option
+// Tradier can return IV on greeks.smv_vol or implied_volatility
+// smv_vol is a decimal (0.289), implied_volatility may be percent or decimal
 // ------------------------------------------------------------
-async function fetchRSI(symbol) {
-  try {
-    const BASE = process.env.TRADIER_BASE_URL;
-    const url = `${BASE}/markets/history?symbol=${symbol}&interval=daily&start=${getPastDate(30)}`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${process.env.TRADIER_KEY}`,
-        Accept: "application/json"
-      }
-    });
-    const json = await res.json();
-    const history = json?.history?.day;
-    if (!history || history.length < 15) return null;
-    const closes = history.map(d => d.close);
-    return calculateRSI(closes, 14);
-  } catch (e) {
-    console.log(`[credit-scan] RSI fetch failed for ${symbol}:`, e.message);
-    return null;
+function extractIV(option) {
+  if (option?.greeks?.smv_vol) {
+    return option.greeks.smv_vol * 100; // Convert decimal to percent
   }
-}
-
-function getPastDate(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().split("T")[0];
-}
-
-function calculateRSI(closes, period = 14) {
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+  if (option?.implied_volatility) {
+    const iv = option.implied_volatility;
+    // Tradier sometimes returns as decimal, sometimes as percent
+    return iv > 2 ? iv : iv * 100;
   }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-
-  for (let i = period + 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    const gain = diff >= 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
-  }
-
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return Math.round(100 - (100 / (1 + rs)));
+  return null;
 }
 
 // ------------------------------------------------------------
 // 1 SD calculation
-// iv: decimal (e.g. 0.289 for 28.9%)
+// iv: percent (e.g. 28.9 for 28.9%)
 // dte: days to expiration
 // spot: current underlying price
+// Returns: dollar move representing 1 standard deviation
 // ------------------------------------------------------------
-function calcOneSD(spot, iv, dte) {
-  return spot * iv * Math.sqrt(dte / 365);
+function calcOneSD(spot, ivPct, dte) {
+  return spot * (ivPct / 100) * Math.sqrt(dte / 365);
 }
 
 // ------------------------------------------------------------
 // Scoring — credit spread specific
+// Total possible: 80 points
 // ------------------------------------------------------------
 function scoreCreditSpread({ netCredit, iv, rsi, shortStrikePct, bidAskQuality }) {
   let score = 0;
@@ -100,23 +62,25 @@ function scoreCreditSpread({ netCredit, iv, rsi, shortStrikePct, bidAskQuality }
   else if (netCredit >= 0.55) score += 18;
   else if (netCredit >= 0.40) score += 12;
 
-  // IV score (0–25)
+  // IV score (0–25) — higher IV = more premium
   if (iv >= 40) score += 25;
   else if (iv >= 35) score += 20;
   else if (iv >= 30) score += 15;
   else if (iv >= 28) score += 10;
 
-  // Strike placement score (0–25)
-  if (shortStrikePct >= 110) score += 25;
-  else if (shortStrikePct >= 100) score += 20;
-  else if (shortStrikePct >= 85) score += 12;
+  // Strike placement score (0–15)
+  // shortStrikePct = how far short strike is from spot as % of 1 SD
+  // 100% = exactly at 1 SD, 110%+ = beyond 1 SD (safer)
+  if (shortStrikePct >= 110) score += 15;
+  else if (shortStrikePct >= 100) score += 12;
+  else if (shortStrikePct >= 85) score += 6;
 
-  // RSI score (0–10)
+  // RSI score (0–10) — neutral to mildly bullish preferred
   if (rsi >= 40 && rsi <= 60) score += 10;
   else if (rsi > 60 && rsi <= 70) score += 8;
-  else if (rsi > 70) score += 4;
+  else if (rsi > 70 && rsi <= 75) score += 4;
 
-  // Liquidity score (0–10)
+  // Liquidity score (0–10) — tight bid/ask
   if (bidAskQuality <= 0.10) score += 10;
   else if (bidAskQuality <= 0.20) score += 7;
   else if (bidAskQuality <= 0.40) score += 4;
@@ -126,92 +90,100 @@ function scoreCreditSpread({ netCredit, iv, rsi, shortStrikePct, bidAskQuality }
 }
 
 // ------------------------------------------------------------
-// EV calculation
+// EV calculation — per contract at 68% win rate
+// EV = credit × (2 × winRate - 1)
 // ------------------------------------------------------------
 function calcEV(netCredit, winRate = 0.68) {
   return Number((netCredit * 100 * (2 * winRate - 1)).toFixed(2));
 }
 
 // ------------------------------------------------------------
-// Process a single symbol — returns array of valid spreads
+// Process a single symbol
+// Returns array of valid credit spreads
 // ------------------------------------------------------------
 async function processSymbol(symbol) {
   const spreads = [];
 
   try {
-    // Fire RSI and expirations in parallel
+    // RSI and expirations in parallel
     const [rsi, allExps] = await Promise.all([
       fetchRSI(symbol),
       fetchExpirations(symbol)
     ]);
 
+    console.log(`[credit-scan] ${symbol} — RSI: ${rsi}`);
+
     // RSI filter
     if (rsi !== null && (rsi < MIN_RSI || rsi > MAX_RSI)) {
-      console.log(`[credit-scan] ${symbol} skipped — RSI ${rsi} out of range ${MIN_RSI}–${MAX_RSI}`);
+      console.log(`[credit-scan] ${symbol} skipped — RSI ${rsi} outside ${MIN_RSI}–${MAX_RSI}`);
       return spreads;
     }
 
-    // Filter expirations to target DTE window
-    const filteredExps = filterExpirations(allExps);
-    const expirations = filteredExps.filter(exp => {
-      const dte = Math.round((new Date(exp + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24));
-      return dte >= TARGET_DTE_MIN && dte <= TARGET_DTE_MAX;
-    });
+    // Filter expirations to target DTE window using market-helpers
+    // filterExpirations now accepts { min, max } options
+    const expirations = filterExpirations(allExps, { min: TARGET_DTE_MIN, max: TARGET_DTE_MAX });
 
-    if (expirations.length === 0) {
-      console.log(`[credit-scan] ${symbol} — no expirations in ${TARGET_DTE_MIN}–${TARGET_DTE_MAX} DTE window`);
-      return spreads;
-    }
+    console.log(`[credit-scan] ${symbol} — expirations in window: ${expirations.join(", ") || "none"}`);
+
+    if (expirations.length === 0) return spreads;
 
     // Fetch all chains in parallel
     const chains = await Promise.all(
-      expirations.map(exp => fetchOptionChain(symbol, exp).then(chain => ({ exp, chain })))
+      expirations.map(exp =>
+        fetchOptionChain(symbol, exp).then(chain => ({ exp, chain }))
+      )
     );
 
     for (const { exp: expiration, chain } of chains) {
       if (!chain) continue;
 
-      const underlying = chain.underlying;
-      const dte = Math.round((new Date(expiration + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24));
+      const { underlying, options } = chain;
+      const dte = Math.round((new Date(expiration + "T12:00:00") - new Date()) / 86400000);
 
-      // chain-helpers returns { underlying, options } — options is already parsed array
-      const puts = chain.options?.filter(o => o.option_type === "put") || [];
-      if (puts.length === 0) continue;
+      const puts = options.filter(o => o.option_type === "put");
+      if (puts.length === 0) {
+        console.log(`[credit-scan] ${symbol} ${expiration} — no puts in chain`);
+        continue;
+      }
 
-      // ATM put for IV
+      // ATM put — closest strike to underlying
       const atmPut = puts.reduce((prev, curr) =>
         Math.abs(curr.strike - underlying) < Math.abs(prev.strike - underlying) ? curr : prev
       );
 
-      const iv = atmPut?.greeks?.smv_vol
-        ? atmPut.greeks.smv_vol * 100
-        : atmPut?.implied_volatility
-        ? atmPut.implied_volatility * 100
-        : null;
+      const iv = extractIV(atmPut);
+
+      console.log(`[credit-scan] ${symbol} ${expiration} — DTE: ${dte}, IV: ${iv?.toFixed(1) ?? "null"}, ATM strike: ${atmPut.strike}, underlying: ${underlying}`);
 
       if (iv === null) {
-        console.log(`[credit-scan] ${symbol} ${expiration} — IV unavailable`);
+        console.log(`[credit-scan] ${symbol} ${expiration} — IV unavailable, skipping`);
         continue;
       }
 
       if (iv < MIN_IV || iv > MAX_IV) {
-        console.log(`[credit-scan] ${symbol} ${expiration} — IV ${iv.toFixed(1)}% outside ${MIN_IV}–${MAX_IV}% range`);
+        console.log(`[credit-scan] ${symbol} ${expiration} — IV ${iv.toFixed(1)}% outside ${MIN_IV}–${MAX_IV}%, skipping`);
         continue;
       }
 
-      // 1 SD down
-      const oneSD = calcOneSD(underlying, iv / 100, dte);
+      // 1 SD down from spot
+      const oneSD = calcOneSD(underlying, iv, dte);
       const oneSdStrike = underlying - oneSD;
 
-      console.log(`[credit-scan] ${symbol} ${expiration} — spot $${underlying}, IV ${iv.toFixed(1)}%, 1SD down $${oneSdStrike.toFixed(2)}`);
+      console.log(`[credit-scan] ${symbol} ${expiration} — 1SD down: $${oneSdStrike.toFixed(2)}`);
 
-      // Eligible short puts at or below 1 SD
-      const eligibleShortPuts = puts.filter(p => p.strike <= oneSdStrike);
-      if (eligibleShortPuts.length === 0) continue;
+      // Short leg candidates: puts at or below 1 SD
+      const eligibleShortPuts = puts
+        .filter(p => p.strike <= oneSdStrike)
+        .sort((a, b) => b.strike - a.strike); // Closest to 1 SD first
+
+      if (eligibleShortPuts.length === 0) {
+        console.log(`[credit-scan] ${symbol} ${expiration} — no puts at or below 1SD ($${oneSdStrike.toFixed(2)})`);
+        continue;
+      }
 
       for (const shortPut of eligibleShortPuts) {
-        const longStrike = shortPut.strike - SPREAD_WIDTH;
-        const longPut = puts.find(p => p.strike === longStrike);
+        const longStrike = Number((shortPut.strike - SPREAD_WIDTH).toFixed(1));
+        const longPut = puts.find(p => Math.abs(p.strike - longStrike) < 0.01);
         if (!longPut) continue;
 
         const shortMid = (shortPut.bid + shortPut.ask) / 2;
@@ -224,7 +196,6 @@ async function processSymbol(symbol) {
         const distanceFromSpot = underlying - shortPut.strike;
         const shortStrikePct = (distanceFromSpot / oneSD) * 100;
         const bidAskQuality = ((shortPut.ask - shortPut.bid) + (longPut.ask - longPut.bid)) / 2;
-
         const totalScore = scoreCreditSpread({ netCredit, iv, rsi, shortStrikePct, bidAskQuality });
         const ev = calcEV(netCredit);
 
@@ -269,7 +240,7 @@ async function processSymbol(symbol) {
             rsi,
             iv_score: iv >= 40 ? 25 : iv >= 35 ? 20 : iv >= 30 ? 15 : 10,
             credit_score: netCredit >= 1.00 ? 30 : netCredit >= 0.75 ? 24 : netCredit >= 0.55 ? 18 : 12,
-            strike_placement_score: shortStrikePct >= 110 ? 25 : shortStrikePct >= 100 ? 20 : 12,
+            strike_placement_score: shortStrikePct >= 110 ? 15 : shortStrikePct >= 100 ? 12 : 6,
             liquidity_score: bidAskQuality <= 0.10 ? 10 : bidAskQuality <= 0.20 ? 7 : bidAskQuality <= 0.40 ? 4 : 1
           },
           exit_rules: {
@@ -293,24 +264,18 @@ async function processSymbol(symbol) {
 export default async function handler(req, res) {
   try {
     const { symbols } = req.query;
-
-    if (!symbols) {
-      return res.status(400).json({ error: "Missing symbols parameter" });
-    }
+    if (!symbols) return res.status(400).json({ error: "Missing symbols parameter" });
 
     const tickers = symbols.split(",");
 
-    // All symbols in parallel — cuts wall time from n×T to T
+    // All symbols in parallel
     const results = await Promise.all(tickers.map(processSymbol));
     let allSpreads = results.flat();
 
-    // Sort by total score descending
     allSpreads.sort((a, b) => b.scores.total_score - a.scores.total_score);
 
-    // Cap per symbol
     const seen = {};
     const top_spreads = [];
-
     for (const spread of allSpreads) {
       seen[spread.symbol] = (seen[spread.symbol] || 0) + 1;
       if (seen[spread.symbol] <= MAX_PER_SYMBOL) top_spreads.push(spread);
@@ -333,7 +298,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error("[credit-scan] Error:", err);
+    console.error("[credit-scan] Fatal error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 }
