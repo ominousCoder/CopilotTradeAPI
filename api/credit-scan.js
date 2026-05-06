@@ -182,6 +182,10 @@ async function processSymbol(symbol) {
       }
 
       for (const shortPut of eligibleShortPuts) {
+        // Delta floor — abs(delta) below 0.03 means stale/illiquid pricing
+        const shortDelta = Math.abs(shortPut.greeks?.delta ?? 0);
+        if (shortDelta < 0.03) continue;
+
         const longStrike = Number((shortPut.strike - SPREAD_WIDTH).toFixed(1));
         const longPut = puts.find(p => Math.abs(p.strike - longStrike) < 0.01);
         if (!longPut) continue;
